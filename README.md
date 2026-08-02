@@ -1,20 +1,16 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Bloomberg Terminal Canvas
 
-# Run and deploy your AI Studio app
+Interactive market-terminal dashboard built with React, TypeScript, and Vite.
 
-This contains everything you need to run your app locally.
+## Development
 
-View your app in AI Studio: https://ai.studio/apps/f17716de-3ba0-4a0c-bdf3-6410c2b9ee14
+Run:
 
-## Run Locally
+npm install
+npm run dev
 
-**Prerequisites:**  Node.js
+## Production build
 
+npm run build
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+The production GitHub Pages build is stored in the docs directory.
