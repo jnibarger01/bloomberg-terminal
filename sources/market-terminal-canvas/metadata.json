@@ -1,0 +1,6 @@
+{
+  "name": "Terminal Canvas Market Dashboard",
+  "description": "Black-background terminal-style drag-and-drop dashboard for global market monitoring with AAPL 60-session chart, sector heatmaps, precious metals, world session clocks, and offline zip exporter.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

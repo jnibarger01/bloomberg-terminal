@@ -1,0 +1,94 @@
+[
+  {
+    "id": "w-indices",
+    "type": "global_indices",
+    "title": "GLOBAL INDICES & BENCHMARKS",
+    "position": {
+      "x": 0,
+      "y": 0,
+      "w": 6,
+      "h": 6,
+      "minW": 3,
+      "minH": 4
+    }
+  },
+  {
+    "id": "w-aapl-chart",
+    "type": "aapl_chart",
+    "title": "AAPL // 60-SESSION CANDLESTICK & INDICATORS",
+    "position": {
+      "x": 6,
+      "y": 0,
+      "w": 6,
+      "h": 6,
+      "minW": 4,
+      "minH": 5
+    }
+  },
+  {
+    "id": "w-heatmap",
+    "type": "sector_heatmap",
+    "title": "SECTOR HEATMAP // TECH, ENERGY, FINANCIALS",
+    "position": {
+      "x": 0,
+      "y": 6,
+      "w": 7,
+      "h": 6,
+      "minW": 4,
+      "minH": 4
+    }
+  },
+  {
+    "id": "w-metals",
+    "type": "precious_metals",
+    "title": "PRECIOUS METALS & COMMODITIES SPOT",
+    "position": {
+      "x": 7,
+      "y": 6,
+      "w": 5,
+      "h": 6,
+      "minW": 3,
+      "minH": 4
+    },
+    "isMaximized": false
+  },
+  {
+    "id": "w-world-clocks",
+    "type": "world_clocks",
+    "title": "WORLD MARKET SESSION CLOCKS & OVERLAPS",
+    "position": {
+      "x": 0,
+      "y": 12,
+      "w": 7,
+      "h": 5,
+      "minW": 4,
+      "minH": 4
+    }
+  },
+  {
+    "id": "w-order-tape",
+    "type": "order_tape",
+    "title": "LIVE ORDER TAPE & TICK FEED",
+    "position": {
+      "x": 7,
+      "y": 12,
+      "w": 5,
+      "h": 5,
+      "minW": 3,
+      "minH": 3
+    }
+  },
+  {
+    "id": "w-market_news-1451",
+    "type": "market_news",
+    "title": "BREAKING TERMINAL WIRE",
+    "position": {
+      "x": 0,
+      "y": 17,
+      "w": 6,
+      "h": 5,
+      "minW": 3,
+      "minH": 3
+    }
+  }
+]
