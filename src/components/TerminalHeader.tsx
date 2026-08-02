@@ -30,6 +30,7 @@ interface Props {
   setDataMode: (mode: AdapterMode) => void;
   speed: number;
   setSpeed: (speed: number) => void;
+  liveModeActive?: boolean;
 }
 
 export const TerminalHeader: React.FC<Props> = ({
@@ -40,7 +41,8 @@ export const TerminalHeader: React.FC<Props> = ({
   dataMode,
   setDataMode,
   speed,
-  setSpeed
+  setSpeed,
+  liveModeActive = false
 }) => {
   const [utcTime, setUtcTime] = useState('');
   const [isAddingWidget, setIsAddingWidget] = useState(false);
@@ -58,7 +60,6 @@ export const TerminalHeader: React.FC<Props> = ({
   const handleAddWidget = (type: WidgetType, title: string) => {
     const newId = `w-${type}-${Date.now().toString().slice(-4)}`;
     
-    // Calculate safe position below existing widgets
     let maxY = 0;
     widgets.forEach(w => {
       if (w.position.y + w.position.h > maxY) {
@@ -112,6 +113,15 @@ export const TerminalHeader: React.FC<Props> = ({
     reader.readAsText(file);
   };
 
+  const toggleDataMode = () => {
+    const newMode = dataMode === 'simulated' ? 'live' : 'simulated';
+    setDataMode(newMode);
+    localStorage.setItem('bloomberg-mode', newMode);
+    if (newMode === 'live') {
+      alert('LIVE MODE: Connect to your backend API\\nVisit /api/docs or check .env.example for configuration');
+    }
+  };
+
   return (
     <header className="bg-slate-950 border-b border-slate-800 p-2 sm:p-3 text-slate-200 font-mono select-none shadow-md z-30">
       <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
@@ -134,9 +144,10 @@ export const TerminalHeader: React.FC<Props> = ({
             <div className="flex items-center gap-3 text-[11px] text-slate-400">
               <span className="text-amber-400 font-bold">{utcTime}</span>
               <span className="hidden md:inline text-slate-600">|</span>
-              <span className="hidden md:flex items-center gap-1 text-emerald-400 font-semibold">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block"></span>
+              <span className="hidden md:flex items-center gap-1">
+                <span className={`w-2 h-2 rounded-full ${liveModeActive ? 'bg-emerald-500 animate-ping' : 'bg-rose-500'} inline-block`}></span>
                 FEED: {dataMode === 'simulated' ? 'SIMULATED REALTIME' : 'LIVE REST'}
+                {liveModeActive && <span className="text-emerald-400 font-bold text-[10px]">● CONN</span>}
               </span>
             </div>
           </div>
@@ -144,6 +155,20 @@ export const TerminalHeader: React.FC<Props> = ({
 
         {/* Action Controls & Toolbar */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Data Mode Toggle */}
+          <button
+            onClick={toggleDataMode}
+            className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 font-mono transition-colors ${
+              dataMode === 'live'
+                ? 'bg-emerald-900 text-emerald-300 border border-emerald-600 hover:bg-emerald-800'
+                : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-emerald-400'
+            }`}
+            title="Toggle Live Mode"
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span className="hidden xl:inline">{dataMode === 'live' ? 'LIVE' : 'SIM'} DATA</span>
+          </button>
+
           {/* Tick Speed Controls */}
           <div className="flex items-center bg-slate-900 border border-slate-800 rounded p-1 text-xs">
             <span className="text-[10px] text-slate-500 px-1 font-bold">SPEED:</span>
@@ -201,6 +226,21 @@ export const TerminalHeader: React.FC<Props> = ({
             <Tv className="w-3.5 h-3.5" />
             <span className="hidden xl:inline text-[10px]">CRT</span>
           </button>
+
+          {/* API Key Input (for local dev) */}
+          <div className="relative hidden lg:block">
+            <input
+              type="text"
+              placeholder="API Key"
+              className="px-2 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-slate-300 focus:outline-none focus:border-emerald-600 font-mono"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && e.currentTarget.value) {
+                  localStorage.setItem('bloomberg-api-key', e.currentTarget.value);
+                  alert('API key saved. Refresh to connect.');
+                }
+              }}
+            />
+          </div>
 
           {/* Layout Presets Dropdown */}
           <select
