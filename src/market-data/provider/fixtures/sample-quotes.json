@@ -1,0 +1,44 @@
+{
+  "AAPL": {
+    "symbol": "AAPL",
+    "name": "Apple Inc.",
+    "currency": "USD",
+    "close": "213.14",
+    "open": "211.02",
+    "high": "214.50",
+    "low": "210.88",
+    "previous_close": "210.44",
+    "change": "2.70",
+    "percent_change": "1.28",
+    "is_market_open": true,
+    "timestamp": 1754140800
+  },
+  "NVDA": {
+    "symbol": "NVDA",
+    "name": "NVIDIA Corporation",
+    "currency": "USD",
+    "close": "178.32",
+    "open": "175.10",
+    "high": "179.90",
+    "low": "174.60",
+    "previous_close": "174.98",
+    "change": "3.34",
+    "percent_change": "1.91",
+    "is_market_open": true,
+    "timestamp": 1754140800
+  },
+  "BTC/USD": {
+    "symbol": "BTC/USD",
+    "name": "Bitcoin",
+    "currency": "USD",
+    "close": "64210.55",
+    "open": "63890.00",
+    "high": "64500.00",
+    "low": "63500.00",
+    "previous_close": "63900.00",
+    "change": "310.55",
+    "percent_change": "0.49",
+    "is_market_open": true,
+    "timestamp": 1754140800
+  }
+}
