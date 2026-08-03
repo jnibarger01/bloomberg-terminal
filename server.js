@@ -1,592 +1,631 @@
 /**
- * Bloomberg Terminal Real Market Data Backend
- * Connects to Finnhub API for live market data
- * Protected with API key validation
+ * Protected market-data backend.
+ *
+ * The server fails closed when BACKEND_API_KEY is missing, never substitutes
+ * random values for provider failures, and returns explicit dataset status.
  */
 
-import express from 'express';
-import dotenv from 'dotenv';
+import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import cors from 'cors';
+import dotenv from 'dotenv';
+import express from 'express';
 
 dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT || 4000;
+const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000', 'http://localhost:5173'];
+const DEFAULT_TRADE_SYMBOLS = ['AAPL', 'NVDA', 'MSFT', 'XOM', 'TSM', 'JPM'];
 
-// API Configuration
-const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
-if (!FINNHUB_API_KEY) {
-  console.warn('WARNING: FINNHUB_API_KEY not set. Using mock fallback data.');
+const INDEX_PROXIES = [
+  { symbol: 'SPY', label: 'S&P 500', name: 'S&P 500 ETF proxy', region: 'Americas' },
+  { symbol: 'QQQ', label: 'NASDAQ 100', name: 'NASDAQ 100 ETF proxy', region: 'Americas' },
+  { symbol: 'DIA', label: 'Dow Jones', name: 'Dow Jones ETF proxy', region: 'Americas' },
+  { symbol: 'EWU', label: 'FTSE 100', name: 'United Kingdom ETF proxy', region: 'Europe' },
+  { symbol: 'EWG', label: 'DAX 40', name: 'Germany ETF proxy', region: 'Europe' },
+  { symbol: 'EWJ', label: 'Nikkei 225', name: 'Japan ETF proxy', region: 'Asia' },
+  { symbol: 'EWH', label: 'Hang Seng', name: 'Hong Kong ETF proxy', region: 'Asia' },
+  { symbol: 'ASHR', label: 'Shanghai', name: 'China A-shares ETF proxy', region: 'Asia' },
+  { symbol: 'EWA', label: 'ASX 200', name: 'Australia ETF proxy', region: 'Asia' },
+  { symbol: 'INDA', label: 'Nifty 50', name: 'India ETF proxy', region: 'Asia' }
+];
+
+const HEATMAP_SYMBOLS = [
+  { ticker: 'NVDA', name: 'NVIDIA Corp', sector: 'AI & Tech' },
+  { ticker: 'AAPL', name: 'Apple Inc', sector: 'AI & Tech' },
+  { ticker: 'MSFT', name: 'Microsoft Corp', sector: 'AI & Tech' },
+  { ticker: 'GOOGL', name: 'Alphabet Inc', sector: 'AI & Tech' },
+  { ticker: 'AMZN', name: 'Amazon.com', sector: 'AI & Tech' },
+  { ticker: 'META', name: 'Meta Platforms', sector: 'AI & Tech' },
+  { ticker: 'TSM', name: 'TSMC', sector: 'AI & Tech' },
+  { ticker: 'AVGO', name: 'Broadcom Inc', sector: 'AI & Tech' },
+  { ticker: 'AMD', name: 'Advanced Micro Devices', sector: 'AI & Tech' },
+  { ticker: 'XOM', name: 'Exxon Mobil', sector: 'Energy' },
+  { ticker: 'CVX', name: 'Chevron Corp', sector: 'Energy' },
+  { ticker: 'COP', name: 'ConocoPhillips', sector: 'Energy' },
+  { ticker: 'SLB', name: 'SLB', sector: 'Energy' },
+  { ticker: 'EOG', name: 'EOG Resources', sector: 'Energy' },
+  { ticker: 'JPM', name: 'JPMorgan Chase', sector: 'Financials' },
+  { ticker: 'BAC', name: 'Bank of America', sector: 'Financials' },
+  { ticker: 'WFC', name: 'Wells Fargo', sector: 'Financials' },
+  { ticker: 'GS', name: 'Goldman Sachs', sector: 'Financials' },
+  { ticker: 'MS', name: 'Morgan Stanley', sector: 'Financials' },
+  { ticker: 'BLK', name: 'BlackRock Inc', sector: 'Financials' }
+];
+
+const COMMODITY_PROXIES = [
+  { symbol: 'GLD', displaySymbol: 'GOLD ETF', name: 'Gold ETF proxy', category: 'Metals', unit: '$/share' },
+  { symbol: 'SLV', displaySymbol: 'SILVER ETF', name: 'Silver ETF proxy', category: 'Metals', unit: '$/share' },
+  { symbol: 'PPLT', displaySymbol: 'PLATINUM ETF', name: 'Platinum ETF proxy', category: 'Metals', unit: '$/share' },
+  { symbol: 'PALL', displaySymbol: 'PALLADIUM ETF', name: 'Palladium ETF proxy', category: 'Metals', unit: '$/share' },
+  { symbol: 'USO', displaySymbol: 'WTI ETF', name: 'WTI crude ETF proxy', category: 'Energy', unit: '$/share' },
+  { symbol: 'BNO', displaySymbol: 'BRENT ETF', name: 'Brent crude ETF proxy', category: 'Energy', unit: '$/share' },
+  { symbol: 'UNG', displaySymbol: 'NAT GAS ETF', name: 'Natural gas ETF proxy', category: 'Energy', unit: '$/share' },
+  { symbol: 'CPER', displaySymbol: 'COPPER ETF', name: 'Copper ETF proxy', category: 'Metals', unit: '$/share' }
+];
+
+const WORLD_SESSIONS = [
+  { city: 'New York', country: 'United States', timezone: 'America/New_York', utcoffset: -4, openHourUTC: 13.5, closeHourUTC: 20, exchange: 'NYSE / NASDAQ', currency: 'USD ($)' },
+  { city: 'London', country: 'United Kingdom', timezone: 'Europe/London', utcoffset: 1, openHourUTC: 7, closeHourUTC: 15.5, exchange: 'LSE', currency: 'GBP (£)' },
+  { city: 'Frankfurt', country: 'Germany', timezone: 'Europe/Berlin', utcoffset: 2, openHourUTC: 7, closeHourUTC: 15.5, exchange: 'XETRA', currency: 'EUR (€)' },
+  { city: 'Tokyo', country: 'Japan', timezone: 'Asia/Tokyo', utcoffset: 9, openHourUTC: 0, closeHourUTC: 6, exchange: 'TSE', currency: 'JPY (¥)' },
+  { city: 'Hong Kong', country: 'Hong Kong', timezone: 'Asia/Hong_Kong', utcoffset: 8, openHourUTC: 1.5, closeHourUTC: 8, exchange: 'HKEX', currency: 'HKD ($)' },
+  { city: 'Sydney', country: 'Australia', timezone: 'Australia/Sydney', utcoffset: 10, openHourUTC: 0, closeHourUTC: 6, exchange: 'ASX', currency: 'AUD ($)' }
+];
+
+export class ProviderError extends Error {
+  constructor(message, { code = 'PROVIDER_ERROR', status = 502 } = {}) {
+    super(message);
+    this.name = 'ProviderError';
+    this.code = code;
+    this.status = status;
+  }
 }
 
-// Security: API Key validation middleware
-const validateApiKey = (req, res, next) => {
-  const apiKey = req.headers['x-api-key'] || req.query['api_key'];
-  
-  // In production, validate against stored keys in database
-  if (!apiKey) {
-    return res.status(401).json({ error: 'API key required' });
-  }
-  
-  next();
-};
-
-// CORS configuration for terminal access
-app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-  credentials: true
-}));
-
-app.use(express.json());
-
-// Helper: Fetch from Finnhub API
-async function fetchFinnhub(path, params = {}) {
-  if (!FINNHUB_API_KEY) {
-    throw new Error('Finnhub API key not configured');
-  }
-  
-  const url = new URL(`https://finnhub.io/api/v1/${path}`);
-  url.searchParams.set('token', FINNHUB_API_KEY);
-  
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      url.searchParams.set(key, String(value));
-    }
-  });
-  
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`Finnhub API error: ${response.status}`);
-  }
-  return response.json();
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-// ============================================
-// GLOBAL INDICES ENDPOINTS
-// ============================================
+function parseAllowedOrigins(value) {
+  const origins = String(value ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  return origins.length > 0 ? origins : DEFAULT_ALLOWED_ORIGINS;
+}
 
-// Real Global Market Indices
-app.get('/api/indices', async (req, res) => {
-  try {
-    if (!FINNHUB_API_KEY) {
-      return res.status(503).json({ error: 'Market data API not configured' });
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left ?? ''), 'utf8');
+  const rightBuffer = Buffer.from(String(right ?? ''), 'utf8');
+  if (leftBuffer.length === 0 || leftBuffer.length !== rightBuffer.length) return false;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function createConcurrencyGate(maxConcurrent) {
+  let active = 0;
+  const queue = [];
+  const release = () => {
+    active -= 1;
+    const next = queue.shift();
+    if (next) next();
+  };
+  return async function run(task) {
+    if (active >= maxConcurrent) await new Promise((resolve) => queue.push(resolve));
+    active += 1;
+    try {
+      return await task();
+    } finally {
+      release();
     }
+  };
+}
 
-    // Fetch real indices data
-    const indicesSymbols = [
-      { symbol: 'INDEX:SPX', name: 'S&P 500', region: 'Americas' },
-      { symbol: 'INDEX:NDX', name: 'NASDAQ 100', region: 'Americas' },
-      { symbol: 'INDEX:DJI', name: 'Dow Jones', region: 'Americas' },
-      { symbol: 'INDEX:FTSE', name: 'FTSE 100', region: 'Europe' },
-      { symbol: 'INDEX:DAX', name: 'DAX 40', region: 'Europe' },
-      { symbol: 'INDEX:N225', name: 'Nikkei 225', region: 'Asia' },
-      { symbol: 'INDEX:HSI', name: 'Hang Seng', region: 'Asia' },
-      { symbol: 'INDEX:SSE', name: 'SSE Composite', region: 'Asia' },
-      { symbol: 'INDEX:ASX20', name: 'ASX 200', region: 'Asia' },
-      { symbol: 'INDEX:NIFTY50', name: 'Nifty 50', region: 'Asia' }
-    ];
-
-    const indicesData = [];
-    
-    for (const item of indicesSymbols) {
-      try {
-        const data = await fetchFinnhub('quote', { symbol: item.symbol });
-        if (data && data.c !== undefined) {
-          indicesData.push({
-            symbol: item.name,
-            name: item.name + ' Index',
-            region: item.region,
-            price: data.c,
-            change: data.d,
-            changePercent: data.dp,
-            high: data.h,
-            low: data.l,
-            sparkline: generateSparkline(data.c),
-            lastUpdate: Date.now()
-          });
-        }
-      } catch (e) {
-        console.warn(`Failed to fetch ${item.symbol}:`, e.message);
+function createTtlCache() {
+  const values = new Map();
+  return {
+    get(key) {
+      const entry = values.get(key);
+      if (!entry) return undefined;
+      if (entry.expiresAt <= Date.now()) {
+        values.delete(key);
+        return undefined;
       }
-    }
-
-    res.json(indicesData);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch indices' });
-  }
-});
-
-// ============================================
-// AAPL CHART DATA
-// ============================================
-
-app.get('/api/stocks/:symbol/candles', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { resolution = 'D', from, to } = req.query;
-    
-    if (!FINNHUB_API_KEY) {
-      return res.status(503).json({ error: 'Market data API not configured' });
-    }
-
-    // Default: last 60 days of daily candles
-    const toTime = to ? Math.floor(new Date(to).getTime() / 1000) : Math.floor(Date.now() / 1000);
-    const fromTime = from ? Math.floor(new Date(from).getTime() / 1000) : toTime - 60 * 24 * 60 * 60;
-
-    const data = await fetchFinnhub('stock/candle', {
-      symbol: symbol.toUpperCase(),
-      resolution: resolution,
-      from: fromTime,
-      to: toTime
-    });
-
-    if (data.s === 'no_data') {
-      return res.status(404).json({ error: 'No data available for symbol' });
-    }
-
-    if (!data.t || data.t.length === 0) {
-      return res.status(404).json({ error: 'No candle data returned' });
-    }
-
-    // Transform to CandleData format
-    const candles = data.t.map((timestamp, i) => ({
-      time: new Date(timestamp * 1000).toISOString().split('T')[0],
-      open: data.o[i],
-      high: data.h[i],
-      low: data.l[i],
-      close: data.c[i],
-      volume: data.v[i],
-      ma20: calculateMA(data.c, i, 20),
-      ma50: calculateMA(data.c, i, 50),
-      rsi: calculateRSI(data.c, i)
-    }));
-
-    res.json(candles);
-  } catch (error) {
-    console.error('Candle error:', error);
-    res.status(500).json({ error: error.message || 'Failed to fetch candles' });
-  }
-});
-
-// ============================================
-// SECTOR HEATMAP
-// ============================================
-
-app.get('/api/heatmap', async (req, res) => {
-  try {
-    if (!FINNHUB_API_KEY) {
-      return res.status(503).json({ error: 'Market data API not configured' });
-    }
-
-    // AI & Tech sector tickers
-    const sectorTickers = [
-      { ticker: 'NVDA', name: 'NVIDIA Corp', sector: 'AI & Tech' },
-      { ticker: 'AAPL', name: 'Apple Inc', sector: 'AI & Tech' },
-      { ticker: 'MSFT', name: 'Microsoft Corp', sector: 'AI & Tech' },
-      { ticker: 'GOOGL', name: 'Alphabet Inc', sector: 'AI & Tech' },
-      { ticker: 'AMZN', name: 'Amazon.com', sector: 'AI & Tech' },
-      { ticker: 'META', name: 'Meta Platforms', sector: 'AI & Tech' },
-      { ticker: 'TSM', name: 'TSMC Semiconductor', sector: 'AI & Tech' },
-      { ticker: 'AVGO', name: 'Broadcom Inc', sector: 'AI & Tech' },
-      { ticker: 'AMD', name: 'Advanced Micro Devices', sector: 'AI & Tech' },
-      { ticker: 'XOM', name: 'Exxon Mobil', sector: 'Energy' },
-      { ticker: 'CVX', name: 'Chevron Corp', sector: 'Energy' },
-      { ticker: 'COP', name: 'ConocoPhillips', sector: 'Energy' },
-      { ticker: 'SLB', name: 'Schlumberger NV', sector: 'Energy' },
-      { ticker: 'EOG', name: 'EOG Resources', sector: 'Energy' },
-      { ticker: 'JPM', name: 'JPMorgan Chase', sector: 'Financials' },
-      { ticker: 'BAC', name: 'Bank of America', sector: 'Financials' },
-      { ticker: 'WFC', name: 'Wells Fargo', sector: 'Financials' },
-      { ticker: 'GS', name: 'Goldman Sachs', sector: 'Financials' },
-      { ticker: 'MS', name: 'Morgan Stanley', sector: 'Financials' },
-      { ticker: 'BLK', name: 'BlackRock Inc', sector: 'Financials' }
-    ];
-
-    const heatmapData = [];
-    
-    for (const item of sectorTickers) {
-      try {
-        const quote = await fetchFinnhub('quote', { symbol: item.ticker });
-        if (quote && quote.c !== undefined) {
-          heatmapData.push({
-            ...item,
-            marketCapBillions: await getMarketCap(item.ticker),
-            price: quote.c,
-            changePercent: quote.dp
-          });
-        }
-      } catch (e) {
-        heatmapData.push(getFallbackHeatmapItem(item));
-      }
-    }
-
-    res.json(heatmapData);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch heatmap' });
-  }
-});
-
-// ============================================
-// PRECIOUS METALS
-// ============================================
-
-app.get('/api/metals', async (req, res) => {
-  try {
-    const metalSymbols = [
-      { symbol: 'XAUUSD', name: 'Gold Spot', category: 'Metals', unit: '$/oz' },
-      { symbol: 'XAGUSD', name: 'Silver Spot', category: 'Metals', unit: '$/oz' },
-      { symbol: 'XPTUSD', name: 'Platinum Spot', category: 'Metals', unit: '$/oz' },
-      { symbol: 'XPDUSD', name: 'Palladium Spot', category: 'Metals', unit: '$/oz' },
-      { symbol: 'CL_USD', name: 'WTI Light Sweet Oil', category: 'Energy', unit: '$/bbl' },
-      { symbol: 'BZ_USD', name: 'Brent Crude Oil', category: 'Energy', unit: '$/bbl' },
-      { symbol: 'NG_USD', name: 'Henry Hub Natural Gas', category: 'Energy', unit: '$/MMBtu' },
-      { symbol: 'HG_USD', name: 'High Grade Copper', category: 'Metals', unit: '$/lb' }
-    ];
-
-    const metalsData = [];
-    
-    for (const metal of metalSymbols) {
-      if (!FINNHUB_API_KEY) {
-        metalsData.push(getFallbackMetal(metal));
-        continue;
-      }
-
-      try {
-        // Finnhub uses different symbols for commodities
-        const quote = await fetchFinnhub('quote', { symbol: metal.symbol });
-        if (quote && quote.c !== undefined) {
-          metalsData.push({
-            ...metal,
-            price: quote.c,
-            change: quote.d,
-            changePercent: quote.dp,
-            bid: quote.c * 0.9997,
-            ask: quote.c * 1.0003,
-            high24h: quote.h,
-            low24h: quote.l,
-            history: [quote.l, quote.c, quote.h],
-            lastUpdate: Date.now()
-          });
-        } else {
-          metalsData.push(getFallbackMetal(metal));
-        }
-      } catch (e) {
-        metalsData.push(getFallbackMetal(metal));
-      }
-    }
-
-    res.json(metalsData);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch metals' });
-  }
-});
-
-// ============================================
-// WORLD SESSION TIMES
-// ============================================
-
-app.get('/api/sessions', async (req, res) => {
-  const sessions = [
-    {
-      city: 'New York',
-      country: 'United States',
-      timezone: 'America/New_York',
-      utcoffset: -4,
-      openHourUTC: 13.5,
-      closeHourUTC: 20.0,
-      exchange: 'NYSE / NASDAQ',
-      currency: 'USD ($)'
+      return entry.value;
     },
-    {
-      city: 'London',
-      country: 'United Kingdom',
-      timezone: 'Europe/London',
-      utcoffset: 1,
-      openHourUTC: 7.0,
-      closeHourUTC: 15.5,
-      exchange: 'LSE (London Stock Exchange)',
-      currency: 'GBP (£)'
+    set(key, value, ttlMs) {
+      values.set(key, { value, expiresAt: Date.now() + ttlMs });
     },
-    {
-      city: 'Frankfurt',
-      country: 'Germany',
-      timezone: 'Europe/Berlin',
-      utcoffset: 2,
-      openHourUTC: 7.0,
-      closeHourUTC: 15.5,
-      exchange: 'XETRA / Börse Frankfurt',
-      currency: 'EUR (€)'
-    },
-    {
-      city: 'Tokyo',
-      country: 'Japan',
-      timezone: 'Asia/Tokyo',
-      utcoffset: 9,
-      openHourUTC: 0.0,
-      closeHourUTC: 6.0,
-      exchange: 'TSE (Tokyo Stock Exchange)',
-      currency: 'JPY (¥)'
-    },
-    {
-      city: 'Hong Kong',
-      country: 'Hong Kong',
-      timezone: 'Asia/Hong_Kong',
-      utcoffset: 8,
-      openHourUTC: 1.5,
-      closeHourUTC: 8.0,
-      exchange: 'HKEX (Hong Kong Exchange)',
-      currency: 'HKD ($)'
-    },
-    {
-      city: 'Sydney',
-      country: 'Australia',
-      timezone: 'Australia/Sydney',
-      utcoffset: 10,
-      openHourUTC: 0.0,
-      closeHourUTC: 6.0,
-      exchange: 'ASX (Australian Securities)',
-      currency: 'AUD ($)'
+    clear() {
+      values.clear();
     }
-  ];
-  
-  res.json(sessions);
-});
+  };
+}
 
-// ============================================
-// LIVE TAPE TICKS
-// ============================================
+export function createFinnhubClient({
+  apiKey,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 8_000,
+  maxConcurrent = 4,
+  defaultCacheTtlMs = 15_000
+} = {}) {
+  if (typeof fetchImpl !== 'function') throw new Error('A fetch implementation is required');
+  const cache = createTtlCache();
+  const runLimited = createConcurrencyGate(maxConcurrent);
 
-app.get('/api/tape', async (req, res) => {
-  try {
-    if (!FINNHUB_API_KEY) {
-      return res.json(getFallbackTape());
-    }
-
-    const tickers = ['AAPL', 'NVDA', 'MSFT', 'XAUUSD', 'XOM', 'TSM', 'JPM', 'BTCUSD', 'SPX'];
-    const tape = [];
-    const now = new Date();
-    const timeStr = now.toTimeString().split(' ')[0];
-
-    for (let i = 0; i < 10; i++) {
-      const ticker = tickers[Math.floor(Math.random() * tickers.length)];
-      const isBuy = Math.random() > 0.45;
-      const size = Math.floor((Math.random() * 20 + 1) * 50);
-      
-      let basePrice = 100;
-      try {
-        const quote = await fetchFinnhub('quote', { symbol: ticker });
-        if (quote && quote.c !== undefined) {
-          basePrice = quote.c;
-        }
-      } catch (e) {
-        // Use fallback
-      }
-
-      const price = Number((basePrice * (1 + (Math.random() - 0.5) * 0.002)).toFixed(2));
-      
-      tape.unshift({
-        id: Date.now() + i,
-        timestamp: timeStr,
-        ticker: ticker,
-        type: isBuy ? 'BUY' : 'SELL',
-        price,
-        size
+  async function request(path, params = {}, { cacheTtlMs = defaultCacheTtlMs } = {}) {
+    if (!apiKey) {
+      throw new ProviderError('Finnhub API key is not configured', {
+        code: 'PROVIDER_NOT_CONFIGURED',
+        status: 503
       });
     }
 
-    res.json(tape);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch tape' });
-  }
-});
-
-// ============================================
-// MARKET NEWS
-// ============================================
-
-app.get('/api/news', async (req, res) => {
-  try {
-    if (!FINNHUB_API_KEY) {
-      return res.json(getFallbackNews());
+    const url = new URL(`https://finnhub.io/api/v1/${path}`);
+    url.searchParams.set('token', apiKey);
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
     }
 
-    const news = await fetchFinnhub('news', { category: 'general', 'num': 10 });
-    res.json(news.slice(0, 10));
-  } catch (error) {
-    console.warn('News fetch failed, returning fallback:', error.message);
-    res.json(getFallbackNews());
+    const cacheKey = url.toString();
+    const cached = cache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    const payload = await runLimited(async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetchImpl(url, {
+          headers: { Accept: 'application/json' },
+          signal: controller.signal
+        });
+        const text = await response.text();
+        let body = null;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          throw new ProviderError('Provider returned invalid JSON', { code: 'INVALID_PROVIDER_RESPONSE' });
+        }
+        if (!response.ok) {
+          throw new ProviderError(`Finnhub request failed with ${response.status}`, {
+            code: response.status === 429 ? 'PROVIDER_RATE_LIMITED' : 'PROVIDER_HTTP_ERROR',
+            status: response.status
+          });
+        }
+        return body;
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          throw new ProviderError('Finnhub request timed out', {
+            code: 'UPSTREAM_TIMEOUT',
+            status: 504
+          });
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+
+    cache.set(cacheKey, payload, cacheTtlMs);
+    return payload;
   }
-});
 
-// ============================================
-// HEALTH CHECK & AUTH
-// ============================================
+  return {
+    request,
+    quote: (symbol) => request('quote', { symbol }, { cacheTtlMs: 15_000 }),
+    profile: (symbol) => request('stock/profile2', { symbol }, { cacheTtlMs: 6 * 60 * 60 * 1000 }),
+    candles: (symbol, resolution, from, to) => request('stock/candle', { symbol, resolution, from, to }, { cacheTtlMs: 5 * 60 * 1000 }),
+    news: () => request('news', { category: 'general' }, { cacheTtlMs: 60_000 }),
+    clearCache: () => cache.clear()
+  };
+}
 
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    timestamp: new Date().toISOString(),
-    apiConfigured: !!FINNHUB_API_KEY 
+function assertQuote(quote, symbol) {
+  if (!quote || !Number.isFinite(Number(quote.c)) || Number(quote.c) <= 0) {
+    throw new ProviderError(`No usable quote returned for ${symbol}`, {
+      code: 'NO_PROVIDER_DATA',
+      status: 502
+    });
+  }
+  return quote;
+}
+
+async function collectItems(definitions, mapper) {
+  const settled = await Promise.allSettled(definitions.map(mapper));
+  const items = [];
+  const errors = [];
+  settled.forEach((result, index) => {
+    if (result.status === 'fulfilled') items.push(result.value);
+    else {
+      errors.push({
+        symbol: definitions[index].symbol ?? definitions[index].ticker ?? 'unknown',
+        code: result.reason?.code ?? 'PROVIDER_ERROR',
+        message: result.reason?.message ?? 'Provider request failed'
+      });
+    }
   });
-});
-
-// API key validation endpoint
-app.post('/auth/validate', (req, res) => {
-  const { apiKey } = req.body;
-  if (apiKey && apiKey.length > 20) {
-    res.json({ valid: true, expires: Date.now() + 3600000 });
-  } else {
-    res.status(401).json({ valid: false, error: 'Invalid API key' });
-  }
-});
-
-// ============================================
-// HELPERS
-// ============================================
-
-function getIndexName(symbol) {
-  const names = {
-    'SPX': 'S&P 500',
-    'NDX': 'NASDAQ 100',
-    'DJI': 'Dow Jones',
-    'FTSE': 'FTSE London 100',
-    'DAX': 'German Stock Index',
-    'N225': 'Nikkei Tokyo 225',
-    'HSI': 'Hong Kong Index',
-    'SSE': 'SSE Composite',
-    'ASX20': 'S&P/ASX Sydney',
-    'NIFTY50': 'NSE India Nifty 50'
-  };
-  return names[symbol.split(':')[1] || symbol] || symbol;
+  return { items, errors };
 }
 
-function getIndexRegion(symbol) {
-  const regions = {
-    'SPX': 'Americas', 'NDX': 'Americas', 'DJI': 'Americas',
-    'FTSE': 'Europe', 'DAX': 'Europe',
-    'N225': 'Asia', 'HSI': 'Asia', 'SSE': 'Asia', 'ASX20': 'Asia', 'NIFTY50': 'Asia'
-  };
-  return regions[symbol.split(':')[1] || symbol] || 'Global';
+function sendDataset(res, { items, errors = [], source = 'finnhub', metadata = {} }, successStatus = 200) {
+  const status = items.length === 0 ? 'unavailable' : errors.length > 0 ? 'degraded' : 'connected';
+  return res.status(items.length === 0 && successStatus === 200 ? 503 : successStatus).json({
+    status,
+    source,
+    asOf: new Date().toISOString(),
+    items,
+    errors,
+    metadata
+  });
 }
 
-function generateSparkline(currentPrice) {
-  const volatility = 0.02;
-  const points = [];
-  let price = currentPrice;
-  for (let i = 0; i < 6; i++) {
-    const change = (Math.random() - 0.5) * volatility;
-    price = Math.max(price * (1 + change), currentPrice * 0.95);
-    points.push(Number(price.toFixed(2)));
-  }
-  return points;
-}
-
-function calculateMA(prices, index, period) {
+function calculateSma(prices, index, period) {
   if (index < period - 1) return undefined;
-  const slice = prices.slice(index - period + 1, index + 1);
-  const sum = slice.reduce((a, b) => a + b, 0);
-  return Number((sum / period).toFixed(2));
+  const values = prices.slice(index - period + 1, index + 1);
+  return Number((values.reduce((sum, value) => sum + value, 0) / period).toFixed(2));
 }
 
-function calculateRSI(prices, index, period = 14) {
-  if (index < period) return 50;
-  let gains = 0, losses = 0;
-  for (let i = index - period + 1; i <= index; i++) {
-    const diff = prices[i] - prices[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
+function calculateRsi(prices, index, period = 14) {
+  if (index < period) return undefined;
+  let gains = 0;
+  let losses = 0;
+  for (let cursor = index - period + 1; cursor <= index; cursor += 1) {
+    const difference = prices[cursor] - prices[cursor - 1];
+    if (difference >= 0) gains += difference;
+    else losses += Math.abs(difference);
   }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return Number((100 - (100 / (1 + rs))).toFixed(1));
+  const averageGain = gains / period;
+  const averageLoss = losses / period;
+  if (averageLoss === 0) return 100;
+  const relativeStrength = averageGain / averageLoss;
+  return Number((100 - (100 / (1 + relativeStrength))).toFixed(1));
 }
 
-async function getMarketCap(ticker) {
-  try {
-    const profile = await fetchFinnhub('stock/profile2', { symbol: ticker });
-    return profile.market_cap || (500 + Math.random() * 3000);
-  } catch {
-    return 500 + Math.random() * 3000;
-  }
+function calculateEmaSeries(prices, period) {
+  const multiplier = 2 / (period + 1);
+  const result = [];
+  let previous = prices[0];
+  prices.forEach((price, index) => {
+    previous = index === 0 ? price : ((price - previous) * multiplier) + previous;
+    result.push(previous);
+  });
+  return result;
 }
 
-function getFallbackHeatmapItem(item) {
+function transformCandles(data) {
+  if (!data || data.s === 'no_data' || !Array.isArray(data.t) || data.t.length === 0) return [];
+  const closes = data.c.map(Number);
+  const ema12 = calculateEmaSeries(closes, 12);
+  const ema26 = calculateEmaSeries(closes, 26);
+  return data.t.map((timestamp, index) => ({
+    time: new Date(Number(timestamp) * 1000).toISOString().slice(0, 10),
+    open: Number(data.o[index]),
+    high: Number(data.h[index]),
+    low: Number(data.l[index]),
+    close: closes[index],
+    volume: Number(data.v[index]),
+    ma20: calculateSma(closes, index, 20),
+    ma50: calculateSma(closes, index, 50),
+    rsi: calculateRsi(closes, index),
+    macd: Number((ema12[index] - ema26[index]).toFixed(2))
+  }));
+}
+
+function normalizeNews(items) {
+  if (!Array.isArray(items)) return [];
+  return items.slice(0, 20).map((item, index) => ({
+    id: String(item.id ?? `${item.datetime ?? Date.now()}-${index}`),
+    time: item.datetime ? new Date(Number(item.datetime) * 1000).toISOString().slice(11, 19) : 'N/A',
+    source: String(item.source || 'FINNHUB').toUpperCase(),
+    category: String(item.category || 'MARKET').toUpperCase(),
+    headline: String(item.headline || '').trim(),
+    urgency: 'NORMAL',
+    url: item.url || undefined
+  })).filter((item) => item.headline.length > 0);
+}
+
+function createRateLimiter({ windowMs, maxRequests }) {
+  const buckets = new Map();
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const current = buckets.get(key);
+    const bucket = !current || current.resetAt <= now ? { count: 0, resetAt: now + windowMs } : current;
+    bucket.count += 1;
+    buckets.set(key, bucket);
+    res.setHeader('RateLimit-Limit', String(maxRequests));
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, maxRequests - bucket.count)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+    if (bucket.count > maxRequests) return res.status(429).json({ error: 'Rate limit exceeded' });
+    return next();
+  };
+}
+
+function createUnavailableTradeSource(message = 'Provider trade stream is not available') {
   return {
-    ...item,
-    marketCapBillions: 500 + Math.random() * 3000,
-    price: 100 + Math.random() * 400,
-    changePercent: (Math.random() - 0.5) * 5
-  };
-}
-
-function getFallbackMetal(metal) {
-  const prices = {
-    'XAUUSD': 2400, 'XAGUSD': 28, 'XPTUSD': 980, 'XPDUSD': 960,
-    'CL_USD': 78, 'BZ_USD': 82, 'NG_USD': 2.1, 'HG_USD': 4.2
-  };
-  const base = prices[metal.symbol] || 100;
-  const change = (Math.random() - 0.48) * 0.015 * base;
-  
-  return {
-    ...metal,
-    price: Number((base + change).toFixed(2)),
-    change: Number(change.toFixed(2)),
-    changePercent: Number(((change / base) * 100).toFixed(2)),
-    bid: Number((base * 0.9997).toFixed(2)),
-    ask: Number((base * 1.0003).toFixed(2)),
-    high24h: Number((base * 1.005).toFixed(2)),
-    low24h: Number((base * 0.995).toFixed(2)),
-    history: [base * 0.995, base, base * 1.005],
-    lastUpdate: Date.now()
-  };
-}
-
-function getFallbackTape() {
-  const tickers = ['AAPL', 'NVDA', 'MSFT', 'XAUUSD', 'XOM', 'TSM', 'JPM'];
-  const now = new Date().toTimeString().split(' ')[0];
-  
-  return [
-    { id: '1', timestamp: now, ticker: 'NVDA', type: 'BUY', price: 128.45, size: 500 },
-    { id: '2', timestamp: now, ticker: 'AAPL', type: 'BUY', price: 228.52, size: 1200 },
-    { id: '3', timestamp: now, ticker: 'XAUUSD', type: 'SELL', price: 2428.40, size: 50 },
-    { id: '4', timestamp: now, ticker: 'MSFT', type: 'BUY', price: 448.95, size: 300 },
-    { id: '5', timestamp: now, ticker: 'XOM', type: 'SELL', price: 114.78, size: 800 },
-    { id: '6', timestamp: now, ticker: 'TSM', type: 'BUY', price: 174.65, size: 1500 }
-  ];
-}
-
-function getFallbackNews() {
-  return [
-    {
-      id: 'news-1',
-      headline: 'Market Opens Higher on Tech Earnings',
-      source: 'BLOOMBERG',
-      category: 'TECH',
-      time: '09:30:00',
-      urgency: 'NORMAL'
-    },
-    {
-      id: 'news-2',
-      headline: 'Fed Signals Rate Decision Next Week',
-      source: 'REUTERS',
-      category: 'FED',
-      time: '08:15:00',
-      urgency: 'HIGH'
-    },
-    {
-      id: 'news-3',
-      headline: 'Oil Prices Rise on Supply Concerns',
-      source: 'WSJ',
-      category: 'ENERGY',
-      time: '07:45:00',
-      urgency: 'NORMAL'
+    getSnapshot() {
+      return {
+        status: 'unavailable',
+        source: 'finnhub-websocket',
+        items: [],
+        errors: [{ code: 'TRADE_STREAM_UNAVAILABLE', message }]
+      };
     }
-  ];
+  };
 }
 
-app.listen(PORT, () => {
-  console.log(`Bloomberg Terminal backend server running on port ${PORT}`);
-  console.log(`API Key required for data access. Send X-API-Key header.`);
-});
+export function createFinnhubTradeStream({
+  apiKey,
+  symbols = DEFAULT_TRADE_SYMBOLS,
+  WebSocketImpl = globalThis.WebSocket,
+  maxItems = 200,
+  reconnectDelayMs = 5_000
+} = {}) {
+  let socket = null;
+  let stopped = true;
+  let state = 'unavailable';
+  let lastError = apiKey ? null : 'Finnhub API key is not configured';
+  let trades = [];
+  let reconnectTimer = null;
+
+  function scheduleReconnect() {
+    if (stopped || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, reconnectDelayMs);
+  }
+
+  function connect() {
+    if (stopped) return;
+    if (!apiKey || typeof WebSocketImpl !== 'function') {
+      state = 'unavailable';
+      lastError = !apiKey ? 'Finnhub API key is not configured' : 'WebSocket client is unavailable in this runtime';
+      return;
+    }
+    state = 'connecting';
+    socket = new WebSocketImpl(`wss://ws.finnhub.io?token=${encodeURIComponent(apiKey)}`);
+    socket.addEventListener('open', () => {
+      state = 'connected';
+      lastError = null;
+      symbols.forEach((symbol) => socket.send(JSON.stringify({ type: 'subscribe', symbol })));
+    });
+    socket.addEventListener('message', (event) => {
+      try {
+        const payload = JSON.parse(String(event.data));
+        if (payload.type !== 'trade' || !Array.isArray(payload.data)) return;
+        const normalized = payload.data.map((trade, index) => ({
+          id: `${trade.s}-${trade.t}-${index}`,
+          timestamp: new Date(Number(trade.t)).toISOString().slice(11, 19),
+          ticker: String(trade.s),
+          type: 'TRADE',
+          price: Number(trade.p),
+          size: Number(trade.v),
+          source: 'finnhub-websocket'
+        })).filter((trade) => Number.isFinite(trade.price) && Number.isFinite(trade.size));
+        trades = [...normalized.reverse(), ...trades].slice(0, maxItems);
+      } catch (error) {
+        state = 'degraded';
+        lastError = `Invalid trade message: ${error.message}`;
+      }
+    });
+    socket.addEventListener('error', () => {
+      state = 'degraded';
+      lastError = 'Finnhub trade stream error';
+    });
+    socket.addEventListener('close', () => {
+      socket = null;
+      if (!stopped) {
+        state = 'degraded';
+        lastError = 'Finnhub trade stream disconnected';
+        scheduleReconnect();
+      }
+    });
+  }
+
+  return {
+    start() {
+      if (!stopped) return;
+      stopped = false;
+      connect();
+    },
+    stop() {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      if (socket) socket.close();
+      socket = null;
+    },
+    getSnapshot() {
+      const snapshotState = state === 'connected' && trades.length === 0 ? 'degraded' : state;
+      return {
+        status: snapshotState,
+        source: 'finnhub-websocket',
+        items: [...trades],
+        errors: lastError ? [{ code: 'TRADE_STREAM_STATUS', message: lastError }] : []
+      };
+    }
+  };
+}
+
+export function createApp(options = {}) {
+  const backendApiKey = options.backendApiKey ?? process.env.BACKEND_API_KEY;
+  const finnhubApiKey = options.finnhubApiKey ?? process.env.FINNHUB_API_KEY;
+  const allowedOrigins = options.allowedOrigins ?? parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+  const requestTimeoutMs = options.requestTimeoutMs ?? parsePositiveInt(process.env.UPSTREAM_TIMEOUT_MS, 8_000);
+  const maxConcurrent = options.maxConcurrent ?? parsePositiveInt(process.env.UPSTREAM_MAX_CONCURRENT, 4);
+  const rateLimitWindowMs = options.rateLimitWindowMs ?? parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 60_000);
+  const rateLimitMax = options.rateLimitMax ?? parsePositiveInt(process.env.RATE_LIMIT_MAX, 120);
+  const provider = options.provider ?? createFinnhubClient({
+    apiKey: finnhubApiKey,
+    fetchImpl: options.fetchImpl,
+    timeoutMs: requestTimeoutMs,
+    maxConcurrent
+  });
+  const tradeSource = options.tradeSource ?? createUnavailableTradeSource();
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+  app.use(cors({
+    credentials: true,
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Origin is not allowed'));
+    }
+  }));
+  app.use(express.json({ limit: '32kb' }));
+
+  const authorize = (req, res, next) => {
+    if (!backendApiKey) return res.status(503).json({ error: 'Backend authorization is not configured' });
+    const suppliedKey = req.get('x-api-key');
+    if (!suppliedKey) return res.status(401).json({ error: 'X-API-Key header is required' });
+    if (!safeEqual(suppliedKey, backendApiKey)) return res.status(403).json({ error: 'Invalid API key' });
+    return next();
+  };
+
+  app.get('/health', (_req, res) => {
+    const trade = tradeSource.getSnapshot();
+    res.json({
+      status: backendApiKey && finnhubApiKey ? 'healthy' : 'degraded',
+      timestamp: new Date().toISOString(),
+      authConfigured: Boolean(backendApiKey),
+      providerConfigured: Boolean(finnhubApiKey),
+      tradeStream: trade.status
+    });
+  });
+  app.post('/auth/validate', authorize, (_req, res) => res.json({ valid: true }));
+  app.use('/api', authorize, createRateLimiter({ windowMs: rateLimitWindowMs, maxRequests: rateLimitMax }));
+
+  app.get('/api/indices', async (_req, res) => {
+    const result = await collectItems(INDEX_PROXIES, async (definition) => {
+      const quote = assertQuote(await provider.quote(definition.symbol), definition.symbol);
+      return {
+        symbol: definition.label,
+        name: definition.name,
+        region: definition.region,
+        sourceSymbol: definition.symbol,
+        proxy: true,
+        price: Number(quote.c),
+        change: Number(quote.d ?? 0),
+        changePercent: Number(quote.dp ?? 0),
+        high: Number(quote.h ?? quote.c),
+        low: Number(quote.l ?? quote.c),
+        sparkline: [Number(quote.pc ?? quote.c), Number(quote.c)],
+        lastUpdate: Number(quote.t ? quote.t * 1000 : Date.now())
+      };
+    });
+    return sendDataset(res, { ...result, metadata: { instrumentType: 'US-listed ETF proxies' } });
+  });
+
+  app.get('/api/heatmap', async (_req, res) => {
+    const definitions = HEATMAP_SYMBOLS.map((item) => ({ ...item, symbol: item.ticker }));
+    const result = await collectItems(definitions, async (definition) => {
+      const [quote, profile] = await Promise.all([
+        provider.quote(definition.ticker),
+        provider.profile(definition.ticker).catch(() => null)
+      ]);
+      assertQuote(quote, definition.ticker);
+      const marketCapitalizationMillions = Number(profile?.marketCapitalization);
+      return {
+        ticker: definition.ticker,
+        name: definition.name,
+        sector: definition.sector,
+        marketCapBillions: Number.isFinite(marketCapitalizationMillions)
+          ? Number((marketCapitalizationMillions / 1000).toFixed(2))
+          : null,
+        price: Number(quote.c),
+        changePercent: Number(quote.dp ?? 0)
+      };
+    });
+    return sendDataset(res, result);
+  });
+
+  app.get('/api/stocks/:symbol/candles', async (req, res) => {
+    const symbol = String(req.params.symbol || '').toUpperCase();
+    if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) return res.status(400).json({ error: 'Invalid stock symbol' });
+    const resolution = String(req.query.resolution || 'D');
+    const to = Number(req.query.to || Math.floor(Date.now() / 1000));
+    const from = Number(req.query.from || to - (120 * 24 * 60 * 60));
+    try {
+      const providerData = await provider.candles(symbol, resolution, from, to);
+      const items = transformCandles(providerData);
+      return sendDataset(res, {
+        items,
+        errors: items.length === 0 ? [{ symbol, code: 'NO_PROVIDER_DATA', message: 'No candle data returned' }] : [],
+        metadata: { symbol, resolution, entitlementMayBeRequired: true }
+      });
+    } catch (error) {
+      return sendDataset(res, {
+        items: [],
+        errors: [{ symbol, code: error.code ?? 'PROVIDER_ERROR', message: error.message }],
+        metadata: { symbol, resolution, entitlementMayBeRequired: true }
+      });
+    }
+  });
+
+  app.get('/api/metals', async (_req, res) => {
+    const result = await collectItems(COMMODITY_PROXIES, async (definition) => {
+      const quote = assertQuote(await provider.quote(definition.symbol), definition.symbol);
+      return {
+        symbol: definition.displaySymbol,
+        sourceSymbol: definition.symbol,
+        proxy: true,
+        name: definition.name,
+        category: definition.category,
+        unit: definition.unit,
+        price: Number(quote.c),
+        change: Number(quote.d ?? 0),
+        changePercent: Number(quote.dp ?? 0),
+        bid: null,
+        ask: null,
+        high24h: Number(quote.h ?? quote.c),
+        low24h: Number(quote.l ?? quote.c),
+        history: [Number(quote.pc ?? quote.c), Number(quote.c)]
+      };
+    });
+    return sendDataset(res, { ...result, metadata: { instrumentType: 'US-listed ETF proxies; not spot commodities' } });
+  });
+
+  app.get('/api/sessions', (_req, res) => sendDataset(res, {
+    items: WORLD_SESSIONS,
+    source: 'static-reference',
+    metadata: { note: 'Reference exchange hours; holiday calendars are not included' }
+  }));
+  app.get('/api/tape', (_req, res) => sendDataset(res, tradeSource.getSnapshot()));
+  app.get('/api/news', async (_req, res) => {
+    try {
+      const items = normalizeNews(await provider.news());
+      return sendDataset(res, {
+        items,
+        errors: items.length === 0 ? [{ code: 'NO_PROVIDER_DATA', message: 'No provider news returned' }] : []
+      });
+    } catch (error) {
+      return sendDataset(res, {
+        items: [],
+        errors: [{ code: error.code ?? 'PROVIDER_ERROR', message: error.message }]
+      });
+    }
+  });
+
+  app.use((error, _req, res, _next) => {
+    if (error?.message === 'Origin is not allowed') return res.status(403).json({ error: 'Origin is not allowed' });
+    console.error(error);
+    return res.status(500).json({ error: 'Internal server error' });
+  });
+  return app;
+}
+
+export function startServer(options = {}) {
+  const port = options.port ?? parsePositiveInt(process.env.PORT, 4000);
+  const backendApiKey = options.backendApiKey ?? process.env.BACKEND_API_KEY;
+  if (!backendApiKey) throw new Error('BACKEND_API_KEY is required; refusing to start an unprotected server');
+  const finnhubApiKey = options.finnhubApiKey ?? process.env.FINNHUB_API_KEY;
+  const tradeSource = options.tradeSource ?? createFinnhubTradeStream({ apiKey: finnhubApiKey });
+  tradeSource.start?.();
+  const app = createApp({ ...options, backendApiKey, finnhubApiKey, tradeSource });
+  const server = app.listen(port, () => console.log(`Market-data backend listening on port ${port}`));
+  server.on('close', () => tradeSource.stop?.());
+  return server;
+}
+
+const isEntrypoint = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+if (isEntrypoint) startServer();
