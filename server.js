@@ -15,6 +15,7 @@ dotenv.config();
 
 const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000', 'http://localhost:5173'];
 const DEFAULT_TRADE_SYMBOLS = ['AAPL', 'NVDA', 'MSFT', 'XOM', 'TSM', 'JPM'];
+const SUPPORTED_PROVIDERS = new Set(['finnhub', 'twelvedata']);
 
 const INDEX_PROXIES = [
   { symbol: 'SPY', label: 'S&P 500', name: 'S&P 500 ETF proxy', region: 'Americas' },
@@ -92,6 +93,14 @@ function parseAllowedOrigins(value) {
     .map((origin) => origin.trim())
     .filter(Boolean);
   return origins.length > 0 ? origins : DEFAULT_ALLOWED_ORIGINS;
+}
+
+function parseMarketDataProvider(value) {
+  const provider = String(value ?? 'finnhub').trim().toLowerCase();
+  if (!SUPPORTED_PROVIDERS.has(provider)) {
+    throw new Error(`Unsupported MARKET_DATA_PROVIDER: ${provider}`);
+  }
+  return provider;
 }
 
 function safeEqual(left, right) {
@@ -219,6 +228,134 @@ export function createFinnhubClient({
   };
 }
 
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function normalizeTwelveDataTimestamp(payload) {
+  const timestamp = finiteNumber(payload?.timestamp);
+  if (timestamp !== undefined) return timestamp > 1_000_000_000_000 ? Math.floor(timestamp / 1000) : Math.floor(timestamp);
+  const parsed = Date.parse(String(payload?.datetime ?? ''));
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined;
+}
+
+function normalizeTwelveDataQuote(payload, symbol) {
+  const current = finiteNumber(payload?.close);
+  if (current === undefined || current <= 0) {
+    throw new ProviderError(`No usable quote returned for ${symbol}`, {
+      code: 'NO_PROVIDER_DATA',
+      status: 502
+    });
+  }
+  return {
+    c: current,
+    d: finiteNumber(payload.change),
+    dp: finiteNumber(payload.percent_change),
+    h: finiteNumber(payload.high),
+    l: finiteNumber(payload.low),
+    pc: finiteNumber(payload.previous_close),
+    t: normalizeTwelveDataTimestamp(payload)
+  };
+}
+
+function capabilityUnavailable(message) {
+  return Promise.reject(new ProviderError(message, {
+    code: 'PROVIDER_CAPABILITY_UNAVAILABLE',
+    status: 501
+  }));
+}
+
+export function createTwelveDataClient({
+  apiKey,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 8_000,
+  maxConcurrent = 4,
+  defaultCacheTtlMs = 15_000
+} = {}) {
+  if (typeof fetchImpl !== 'function') throw new Error('A fetch implementation is required');
+  const cache = createTtlCache();
+  const runLimited = createConcurrencyGate(maxConcurrent);
+
+  async function request(path, params = {}, { cacheTtlMs = defaultCacheTtlMs } = {}) {
+    if (!apiKey) {
+      throw new ProviderError('Twelve Data API key is not configured', {
+        code: 'PROVIDER_NOT_CONFIGURED',
+        status: 503
+      });
+    }
+
+    const url = new URL(`https://api.twelvedata.com/${path}`);
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
+    }
+
+    const cacheKey = url.toString();
+    const cached = cache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    const payload = await runLimited(async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetchImpl(url, {
+          headers: {
+            Accept: 'application/json',
+            Authorization: `apikey ${apiKey}`
+          },
+          signal: controller.signal
+        });
+        const text = await response.text();
+        let body = null;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          throw new ProviderError('Provider returned invalid JSON', { code: 'INVALID_PROVIDER_RESPONSE' });
+        }
+
+        if (!response.ok || body?.status === 'error') {
+          const providerStatus = Number(body?.code);
+          const status = Number.isInteger(providerStatus) && providerStatus >= 400 && providerStatus <= 599
+            ? providerStatus
+            : response.status >= 400
+              ? response.status
+              : 502;
+          throw new ProviderError(body?.message || `Twelve Data request failed with ${status}`, {
+            code: status === 429 ? 'PROVIDER_RATE_LIMITED' : 'PROVIDER_HTTP_ERROR',
+            status
+          });
+        }
+        return body;
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          throw new ProviderError('Twelve Data request timed out', {
+            code: 'UPSTREAM_TIMEOUT',
+            status: 504
+          });
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    });
+
+    cache.set(cacheKey, payload, cacheTtlMs);
+    return payload;
+  }
+
+  return {
+    request,
+    quote: async (symbol) => normalizeTwelveDataQuote(
+      await request('quote', { symbol }, { cacheTtlMs: 15_000 }),
+      symbol
+    ),
+    profile: () => capabilityUnavailable('The selected Twelve Data adapter does not yet provide company profiles'),
+    candles: () => capabilityUnavailable('The selected Twelve Data adapter does not yet provide historical candles'),
+    news: () => capabilityUnavailable('The selected Twelve Data adapter does not yet provide news'),
+    clearCache: () => cache.clear()
+  };
+}
+
 function assertQuote(quote, symbol) {
   if (!quote || !Number.isFinite(Number(quote.c)) || Number(quote.c) <= 0) {
     throw new ProviderError(`No usable quote returned for ${symbol}`, {
@@ -246,7 +383,7 @@ async function collectItems(definitions, mapper) {
   return { items, errors };
 }
 
-function sendDataset(res, { items, errors = [], source = 'finnhub', metadata = {} }, successStatus = 200) {
+function sendDataset(res, { items, errors = [], source = 'provider', metadata = {} }, successStatus = 200) {
   const status = items.length === 0 ? 'unavailable' : errors.length > 0 ? 'degraded' : 'connected';
   return res.status(items.length === 0 && successStatus === 200 ? 503 : successStatus).json({
     status,
@@ -340,12 +477,15 @@ function createRateLimiter({ windowMs, maxRequests }) {
   };
 }
 
-function createUnavailableTradeSource(message = 'Provider trade stream is not available') {
+function createUnavailableTradeSource(
+  message = 'Provider trade stream is not available',
+  source = 'provider-stream'
+) {
   return {
     getSnapshot() {
       return {
         status: 'unavailable',
-        source: 'finnhub-websocket',
+        source,
         items: [],
         errors: [{ code: 'TRADE_STREAM_UNAVAILABLE', message }]
       };
@@ -449,19 +589,40 @@ export function createFinnhubTradeStream({
 
 export function createApp(options = {}) {
   const backendApiKey = options.backendApiKey ?? process.env.BACKEND_API_KEY;
+  const marketDataProvider = parseMarketDataProvider(
+    options.marketDataProvider ?? process.env.MARKET_DATA_PROVIDER
+  );
   const finnhubApiKey = options.finnhubApiKey ?? process.env.FINNHUB_API_KEY;
+  const twelveDataApiKey = options.twelveDataApiKey ?? process.env.TWELVE_DATA_API_KEY;
   const allowedOrigins = options.allowedOrigins ?? parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
   const requestTimeoutMs = options.requestTimeoutMs ?? parsePositiveInt(process.env.UPSTREAM_TIMEOUT_MS, 8_000);
   const maxConcurrent = options.maxConcurrent ?? parsePositiveInt(process.env.UPSTREAM_MAX_CONCURRENT, 4);
   const rateLimitWindowMs = options.rateLimitWindowMs ?? parsePositiveInt(process.env.RATE_LIMIT_WINDOW_MS, 60_000);
   const rateLimitMax = options.rateLimitMax ?? parsePositiveInt(process.env.RATE_LIMIT_MAX, 120);
-  const provider = options.provider ?? createFinnhubClient({
-    apiKey: finnhubApiKey,
-    fetchImpl: options.fetchImpl,
-    timeoutMs: requestTimeoutMs,
-    maxConcurrent
-  });
-  const tradeSource = options.tradeSource ?? createUnavailableTradeSource();
+  const selectedApiKey = marketDataProvider === 'twelvedata' ? twelveDataApiKey : finnhubApiKey;
+  const provider = options.provider ?? (
+    marketDataProvider === 'twelvedata'
+      ? createTwelveDataClient({
+        apiKey: twelveDataApiKey,
+        fetchImpl: options.fetchImpl,
+        timeoutMs: requestTimeoutMs,
+        maxConcurrent
+      })
+      : createFinnhubClient({
+        apiKey: finnhubApiKey,
+        fetchImpl: options.fetchImpl,
+        timeoutMs: requestTimeoutMs,
+        maxConcurrent
+      })
+  );
+  const providerSource = options.providerSource ?? marketDataProvider;
+  const providerConfigured = Boolean(options.provider || selectedApiKey);
+  const tradeSource = options.tradeSource ?? createUnavailableTradeSource(
+    marketDataProvider === 'twelvedata'
+      ? 'Twelve Data streaming is not implemented in quote-only Slice 2'
+      : 'Finnhub trade stream is not started by createApp',
+    marketDataProvider === 'twelvedata' ? 'twelvedata-rest' : 'finnhub-websocket'
+  );
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -485,10 +646,11 @@ export function createApp(options = {}) {
   app.get('/health', (_req, res) => {
     const trade = tradeSource.getSnapshot();
     res.json({
-      status: backendApiKey && finnhubApiKey ? 'healthy' : 'degraded',
+      status: backendApiKey && providerConfigured ? 'healthy' : 'degraded',
       timestamp: new Date().toISOString(),
       authConfigured: Boolean(backendApiKey),
-      providerConfigured: Boolean(finnhubApiKey),
+      providerConfigured,
+      marketDataProvider,
       tradeStream: trade.status
     });
   });
@@ -513,30 +675,57 @@ export function createApp(options = {}) {
         lastUpdate: Number(quote.t ? quote.t * 1000 : Date.now())
       };
     });
-    return sendDataset(res, { ...result, metadata: { instrumentType: 'US-listed ETF proxies' } });
+    return sendDataset(res, {
+      ...result,
+      source: providerSource,
+      metadata: { instrumentType: 'US-listed ETF proxies' }
+    });
   });
 
   app.get('/api/heatmap', async (_req, res) => {
     const definitions = HEATMAP_SYMBOLS.map((item) => ({ ...item, symbol: item.ticker }));
-    const result = await collectItems(definitions, async (definition) => {
-      const [quote, profile] = await Promise.all([
-        provider.quote(definition.ticker),
-        provider.profile(definition.ticker).catch(() => null)
-      ]);
-      assertQuote(quote, definition.ticker);
+    const settled = await Promise.allSettled(definitions.map(async (definition) => {
+      const quote = assertQuote(await provider.quote(definition.ticker), definition.ticker);
+      let profile = null;
+      let warning = null;
+      try {
+        profile = await provider.profile(definition.ticker);
+      } catch (error) {
+        warning = {
+          symbol: definition.ticker,
+          code: error.code ?? 'PROVIDER_ERROR',
+          message: error.message ?? 'Provider profile request failed'
+        };
+      }
       const marketCapitalizationMillions = Number(profile?.marketCapitalization);
       return {
-        ticker: definition.ticker,
-        name: definition.name,
-        sector: definition.sector,
-        marketCapBillions: Number.isFinite(marketCapitalizationMillions)
-          ? Number((marketCapitalizationMillions / 1000).toFixed(2))
-          : null,
-        price: Number(quote.c),
-        changePercent: Number(quote.dp ?? 0)
+        item: {
+          ticker: definition.ticker,
+          name: definition.name,
+          sector: definition.sector,
+          marketCapBillions: Number.isFinite(marketCapitalizationMillions)
+            ? Number((marketCapitalizationMillions / 1000).toFixed(2))
+            : null,
+          price: Number(quote.c),
+          changePercent: Number(quote.dp ?? 0)
+        },
+        warning
       };
+    }));
+    const result = { items: [], errors: [] };
+    settled.forEach((entry, index) => {
+      if (entry.status === 'fulfilled') {
+        result.items.push(entry.value.item);
+        if (entry.value.warning) result.errors.push(entry.value.warning);
+      } else {
+        result.errors.push({
+          symbol: definitions[index].ticker,
+          code: entry.reason?.code ?? 'PROVIDER_ERROR',
+          message: entry.reason?.message ?? 'Provider request failed'
+        });
+      }
     });
-    return sendDataset(res, result);
+    return sendDataset(res, { ...result, source: providerSource });
   });
 
   app.get('/api/stocks/:symbol/candles', async (req, res) => {
@@ -551,12 +740,14 @@ export function createApp(options = {}) {
       return sendDataset(res, {
         items,
         errors: items.length === 0 ? [{ symbol, code: 'NO_PROVIDER_DATA', message: 'No candle data returned' }] : [],
+        source: providerSource,
         metadata: { symbol, resolution, entitlementMayBeRequired: true }
       });
     } catch (error) {
       return sendDataset(res, {
         items: [],
         errors: [{ symbol, code: error.code ?? 'PROVIDER_ERROR', message: error.message }],
+        source: providerSource,
         metadata: { symbol, resolution, entitlementMayBeRequired: true }
       });
     }
@@ -582,7 +773,11 @@ export function createApp(options = {}) {
         history: [Number(quote.pc ?? quote.c), Number(quote.c)]
       };
     });
-    return sendDataset(res, { ...result, metadata: { instrumentType: 'US-listed ETF proxies; not spot commodities' } });
+    return sendDataset(res, {
+      ...result,
+      source: providerSource,
+      metadata: { instrumentType: 'US-listed ETF proxies; not spot commodities' }
+    });
   });
 
   app.get('/api/sessions', (_req, res) => sendDataset(res, {
@@ -596,12 +791,14 @@ export function createApp(options = {}) {
       const items = normalizeNews(await provider.news());
       return sendDataset(res, {
         items,
-        errors: items.length === 0 ? [{ code: 'NO_PROVIDER_DATA', message: 'No provider news returned' }] : []
+        errors: items.length === 0 ? [{ code: 'NO_PROVIDER_DATA', message: 'No provider news returned' }] : [],
+        source: providerSource
       });
     } catch (error) {
       return sendDataset(res, {
         items: [],
-        errors: [{ code: error.code ?? 'PROVIDER_ERROR', message: error.message }]
+        errors: [{ code: error.code ?? 'PROVIDER_ERROR', message: error.message }],
+        source: providerSource
       });
     }
   });
@@ -618,10 +815,28 @@ export function startServer(options = {}) {
   const port = options.port ?? parsePositiveInt(process.env.PORT, 4000);
   const backendApiKey = options.backendApiKey ?? process.env.BACKEND_API_KEY;
   if (!backendApiKey) throw new Error('BACKEND_API_KEY is required; refusing to start an unprotected server');
+  const marketDataProvider = parseMarketDataProvider(
+    options.marketDataProvider ?? process.env.MARKET_DATA_PROVIDER
+  );
   const finnhubApiKey = options.finnhubApiKey ?? process.env.FINNHUB_API_KEY;
-  const tradeSource = options.tradeSource ?? createFinnhubTradeStream({ apiKey: finnhubApiKey });
+  const twelveDataApiKey = options.twelveDataApiKey ?? process.env.TWELVE_DATA_API_KEY;
+  const tradeSource = options.tradeSource ?? (
+    marketDataProvider === 'finnhub'
+      ? createFinnhubTradeStream({ apiKey: finnhubApiKey })
+      : createUnavailableTradeSource(
+        'Twelve Data streaming is not implemented in quote-only Slice 2',
+        'twelvedata-rest'
+      )
+  );
   tradeSource.start?.();
-  const app = createApp({ ...options, backendApiKey, finnhubApiKey, tradeSource });
+  const app = createApp({
+    ...options,
+    backendApiKey,
+    marketDataProvider,
+    finnhubApiKey,
+    twelveDataApiKey,
+    tradeSource
+  });
   const server = app.listen(port, () => console.log(`Market-data backend listening on port ${port}`));
   server.on('close', () => tradeSource.stop?.());
   return server;
