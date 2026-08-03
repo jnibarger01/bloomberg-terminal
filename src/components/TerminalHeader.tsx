@@ -1,25 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import {
-  WidgetConfig,
-  WidgetType,
+import React, { useEffect, useState } from 'react';
+import type {
+  AdapterMode,
+  ConnectionState,
+  DataOrigin,
   ThemeColor,
-  AdapterMode
+  WidgetConfig,
+  WidgetType
 } from '../types';
-import { PRESET_LAYOUTS, DashboardSettings } from '../utils/layoutStorage';
+import { PRESET_LAYOUTS, type DashboardSettings } from '../utils/layoutStorage';
 import { generateOfflineZipBundle } from '../utils/zipExporter';
-import {
-  Terminal,
-  Download,
-  RotateCcw,
-  Plus,
-  Tv,
-  Grid,
-  Zap,
-  Play,
-  Pause,
-  Upload,
-  SlidersHorizontal
-} from 'lucide-react';
+import { setApiKey } from '../services/dataAdapter';
+import { Terminal, Download, Plus, Tv, Zap, Play, Pause } from 'lucide-react';
 
 interface Props {
   widgets: WidgetConfig[];
@@ -28,9 +19,11 @@ interface Props {
   setSettings: React.Dispatch<React.SetStateAction<DashboardSettings>>;
   dataMode: AdapterMode;
   setDataMode: (mode: AdapterMode) => void;
+  connectionState: ConnectionState;
+  dataOrigin: DataOrigin;
+  connectionError: string | null;
   speed: number;
   setSpeed: (speed: number) => void;
-  liveModeActive?: boolean;
 }
 
 export const TerminalHeader: React.FC<Props> = ({
@@ -40,122 +33,95 @@ export const TerminalHeader: React.FC<Props> = ({
   setSettings,
   dataMode,
   setDataMode,
+  connectionState,
+  dataOrigin,
+  connectionError,
   speed,
-  setSpeed,
-  liveModeActive = false
+  setSpeed
 }) => {
   const [utcTime, setUtcTime] = useState('');
   const [isAddingWidget, setIsAddingWidget] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState(() => localStorage.getItem('bloomberg-api-key') || '');
 
   useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      setUtcTime(now.toISOString().replace('T', ' ').substring(0, 19) + ' UTC');
-    };
+    const updateTime = () => setUtcTime(new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC');
     updateTime();
-    const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
+    const interval = globalThis.setInterval(updateTime, 1000);
+    return () => globalThis.clearInterval(interval);
   }, []);
 
   const handleAddWidget = (type: WidgetType, title: string) => {
-    const newId = `w-${type}-${Date.now().toString().slice(-4)}`;
-    
-    let maxY = 0;
-    widgets.forEach(w => {
-      if (w.position.y + w.position.h > maxY) {
-        maxY = w.position.y + w.position.h;
-      }
-    });
-
-    const newWidget: WidgetConfig = {
-      id: newId,
+    const maxY = widgets.reduce((current, widget) => Math.max(current, widget.position.y + widget.position.h), 0);
+    setWidgets([...widgets, {
+      id: `w-${type}-${Date.now().toString().slice(-4)}`,
       type,
       title,
       position: { x: 0, y: maxY, w: 6, h: 5, minW: 3, minH: 3 }
-    };
-
-    setWidgets([...widgets, newWidget]);
+    }]);
     setIsAddingWidget(false);
   };
 
   const handlePresetSelect = (presetId: string) => {
-    const preset = PRESET_LAYOUTS.find(p => p.id === presetId);
-    if (preset) {
-      setWidgets([...preset.widgets]);
-    }
+    const preset = PRESET_LAYOUTS.find((item) => item.id === presetId);
+    if (preset) setWidgets([...preset.widgets]);
   };
 
-  const handleExportJson = () => {
-    const jsonStr = JSON.stringify(widgets, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `terminal_layout_${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const toggleDataMode = () => setDataMode(dataMode === 'simulated' ? 'live' : 'simulated');
+  const saveApiKey = () => {
+    const normalized = apiKeyDraft.trim();
+    if (!normalized) return;
+    localStorage.setItem('bloomberg-api-key', normalized);
+    setApiKey(normalized);
+    if (dataMode === 'live') setDataMode('live');
   };
 
-  const handleImportJson = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const parsed = JSON.parse(event.target?.result as string);
-        if (Array.isArray(parsed)) {
-          setWidgets(parsed);
-        }
-      } catch (err) {
-        alert('Invalid layout JSON file format.');
-      }
-    };
-    reader.readAsText(file);
-  };
+  const feedLabel = dataMode === 'simulated'
+    ? 'SIMULATED DATA'
+    : connectionState === 'connecting'
+      ? 'PROVIDER CONNECTING'
+      : connectionState === 'connected'
+        ? 'PROVIDER CONNECTED'
+        : connectionState === 'degraded'
+          ? 'PROVIDER DEGRADED'
+          : 'PROVIDER FAILED';
 
-  const toggleDataMode = () => {
-    const newMode = dataMode === 'simulated' ? 'live' : 'simulated';
-    setDataMode(newMode);
-    localStorage.setItem('bloomberg-mode', newMode);
-    if (newMode === 'live') {
-      alert('LIVE MODE: Connect to your backend API\\nVisit /api/docs or check .env.example for configuration');
-    }
-  };
+  const statusDotClass = dataMode === 'simulated'
+    ? 'bg-slate-500'
+    : connectionState === 'connected'
+      ? 'bg-emerald-500'
+      : connectionState === 'connecting'
+        ? 'bg-cyan-500 animate-pulse'
+        : connectionState === 'degraded'
+          ? 'bg-amber-500'
+          : 'bg-rose-500';
 
   return (
     <header className="bg-slate-950 border-b border-slate-800 p-2 sm:p-3 text-slate-200 font-mono select-none shadow-md z-30">
       <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-        {/* Brand & Status */}
         <div className="flex items-center gap-3">
           <div className="p-1.5 bg-emerald-950 border border-emerald-600 rounded text-emerald-400">
-            <Terminal className="w-5 h-5 animate-pulse" />
+            <Terminal className="w-5 h-5" />
           </div>
-
           <div>
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-sm sm:text-base tracking-wider text-emerald-400 glow-green">
                 TERMINAL // CANVAS MARKET DASHBOARD
               </h1>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-700/60 font-bold hidden sm:inline-block">
-                v2.5
-              </span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-700/60 font-bold hidden sm:inline-block">v2.6</span>
             </div>
-
             <div className="flex items-center gap-3 text-[11px] text-slate-400">
               <span className="text-amber-400 font-bold">{utcTime}</span>
               <span className="hidden md:inline text-slate-600">|</span>
-              <span className="hidden md:flex items-center gap-1">
-                <span className={`w-2 h-2 rounded-full ${liveModeActive ? 'bg-emerald-500 animate-ping' : 'bg-rose-500'} inline-block`}></span>
-                FEED: {dataMode === 'simulated' ? 'SIMULATED REALTIME' : 'LIVE REST'}
-                {liveModeActive && <span className="text-emerald-400 font-bold text-[10px]">● CONN</span>}
+              <span className="hidden md:flex items-center gap-1" title={connectionError || undefined}>
+                <span className={`w-2 h-2 rounded-full ${statusDotClass} inline-block`} />
+                FEED: {feedLabel}
+                <span className="text-slate-600">({dataOrigin})</span>
               </span>
             </div>
           </div>
         </div>
 
-        {/* Action Controls & Toolbar */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Data Mode Toggle */}
           <button
             onClick={toggleDataMode}
             className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 font-mono transition-colors ${
@@ -163,98 +129,79 @@ export const TerminalHeader: React.FC<Props> = ({
                 ? 'bg-emerald-900 text-emerald-300 border border-emerald-600 hover:bg-emerald-800'
                 : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-emerald-400'
             }`}
-            title="Toggle Live Mode"
+            title="Toggle provider mode"
           >
             <Zap className="w-3.5 h-3.5" />
-            <span className="hidden xl:inline">{dataMode === 'live' ? 'LIVE' : 'SIM'} DATA</span>
+            <span className="hidden xl:inline">{dataMode === 'live' ? 'PROVIDER' : 'SIM'} DATA</span>
           </button>
 
-          {/* Tick Speed Controls */}
           <div className="flex items-center bg-slate-900 border border-slate-800 rounded p-1 text-xs">
             <span className="text-[10px] text-slate-500 px-1 font-bold">SPEED:</span>
             <button
               onClick={() => setSpeed(speed === 0 ? 1 : 0)}
               className={`p-1 rounded hover:bg-slate-800 ${speed === 0 ? 'text-rose-400 font-bold' : 'text-slate-400'}`}
-              title={speed === 0 ? 'Resume Ticks' : 'Pause Ticks'}
+              title={speed === 0 ? 'Resume updates' : 'Pause updates'}
             >
               {speed === 0 ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
             </button>
-            {[1, 2, 5].map(s => (
+            {[1, 2, 5].map((value) => (
               <button
-                key={s}
-                onClick={() => setSpeed(s)}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                  speed === s ? 'bg-emerald-950 text-emerald-400 border border-emerald-700' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {s}X
-              </button>
+                key={value}
+                onClick={() => setSpeed(value)}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${speed === value ? 'bg-emerald-950 text-emerald-400 border border-emerald-700' : 'text-slate-400 hover:text-slate-200'}`}
+              >{value}X</button>
             ))}
           </div>
 
-          {/* Theme Color Selector */}
           <div className="hidden lg:flex items-center bg-slate-900 border border-slate-800 rounded p-1 text-xs">
             <span className="text-[10px] text-slate-500 px-1 font-bold">THEME:</span>
-            {(['green', 'amber', 'cyan', 'monochrome'] as ThemeColor[]).map(tc => (
+            {(['green', 'amber', 'cyan', 'monochrome'] as ThemeColor[]).map((theme) => (
               <button
-                key={tc}
-                onClick={() => setSettings(s => ({ ...s, themeColor: tc }))}
+                key={theme}
+                onClick={() => setSettings((current) => ({ ...current, themeColor: theme }))}
                 className={`px-1.5 py-0.5 rounded text-[10px] font-bold capitalize ${
-                  settings.themeColor === tc
-                    ? tc === 'green' ? 'bg-emerald-950 text-emerald-400 border border-emerald-700'
-                    : tc === 'amber' ? 'bg-amber-950 text-amber-400 border border-amber-700'
-                    : tc === 'cyan' ? 'bg-cyan-950 text-cyan-400 border border-cyan-700'
-                    : 'bg-slate-800 text-slate-100 border border-slate-600'
+                  settings.themeColor === theme
+                    ? theme === 'green'
+                      ? 'bg-emerald-950 text-emerald-400 border border-emerald-700'
+                      : theme === 'amber'
+                        ? 'bg-amber-950 text-amber-400 border border-amber-700'
+                        : theme === 'cyan'
+                          ? 'bg-cyan-950 text-cyan-400 border border-cyan-700'
+                          : 'bg-slate-800 text-slate-100 border border-slate-600'
                     : 'text-slate-500 hover:text-slate-300'
                 }`}
-              >
-                {tc}
-              </button>
+              >{theme}</button>
             ))}
           </div>
 
-          {/* CRT Scanlines Toggle */}
           <button
-            onClick={() => setSettings(s => ({ ...s, crtScanlines: !s.crtScanlines }))}
-            className={`p-1.5 rounded border text-xs flex items-center gap-1 font-mono ${
-              settings.crtScanlines
-                ? 'bg-amber-950 text-amber-400 border border-amber-600'
-                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-            title="Toggle CRT Scanlines Effect"
+            onClick={() => setSettings((current) => ({ ...current, crtScanlines: !current.crtScanlines }))}
+            className={`p-1.5 rounded border text-xs flex items-center gap-1 font-mono ${settings.crtScanlines ? 'bg-amber-950 text-amber-400 border border-amber-600' : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'}`}
+            title="Toggle CRT scanlines"
           >
             <Tv className="w-3.5 h-3.5" />
             <span className="hidden xl:inline text-[10px]">CRT</span>
           </button>
 
-          {/* API Key Input (for local dev) */}
-          <div className="relative hidden lg:block">
-            <input
-              type="text"
-              placeholder="API Key"
-              className="px-2 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-slate-300 focus:outline-none focus:border-emerald-600 font-mono"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && e.currentTarget.value) {
-                  localStorage.setItem('bloomberg-api-key', e.currentTarget.value);
-                  alert('API key saved. Refresh to connect.');
-                }
-              }}
-            />
-          </div>
+          <input
+            type="password"
+            value={apiKeyDraft}
+            placeholder="Backend API key"
+            autoComplete="off"
+            onChange={(event) => setApiKeyDraft(event.currentTarget.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') saveApiKey(); }}
+            className="hidden lg:block px-2 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-slate-300 focus:outline-none focus:border-emerald-600 font-mono"
+          />
 
-          {/* Layout Presets Dropdown */}
           <select
-            onChange={e => handlePresetSelect(e.target.value)}
+            onChange={(event) => handlePresetSelect(event.target.value)}
             defaultValue=""
             className="px-2 py-1 bg-slate-900 border border-slate-800 rounded text-xs text-slate-300 focus:outline-none focus:border-emerald-600 font-mono"
           >
             <option value="" disabled>LAYOUT PRESETS...</option>
-            {PRESET_LAYOUTS.map(p => (
-              <option key={p.id} value={p.id}>{p.label}</option>
-            ))}
+            {PRESET_LAYOUTS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
           </select>
 
-          {/* Add Widget Button */}
           <div className="relative">
             <button
               onClick={() => setIsAddingWidget(!isAddingWidget)}
@@ -263,63 +210,32 @@ export const TerminalHeader: React.FC<Props> = ({
               <Plus className="w-3.5 h-3.5" />
               <span>ADD WIDGET</span>
             </button>
-
             {isAddingWidget && (
               <div className="absolute right-0 mt-1 w-56 bg-slate-900 border border-slate-700 rounded shadow-xl z-50 p-1 space-y-1 text-xs">
-                <div className="px-2 py-1 text-[10px] text-slate-500 font-bold border-b border-slate-800">
-                  AVAILABLE CANVAS WIDGETS
-                </div>
-                <button
-                  onClick={() => handleAddWidget('global_indices', 'GLOBAL INDICES & BENCHMARKS')}
-                  className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
-                >
-                  Global Indices
-                </button>
-                <button
-                  onClick={() => handleAddWidget('sector_heatmap', 'SECTOR HEATMAP // TECH, ENERGY, FINANCIALS')}
-                  className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
-                >
-                  Sector Heatmap
-                </button>
-                <button
-                  onClick={() => handleAddWidget('aapl_chart', 'AAPL // 60-SESSION CANDLESTICK')}
-                  className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
-                >
-                  AAPL 60-Session Chart
-                </button>
-                <button
-                  onClick={() => handleAddWidget('precious_metals', 'PRECIOUS METALS & COMMODITIES')}
-                  className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
-                >
-                  Precious Metals & Spot
-                </button>
-                <button
-                  onClick={() => handleAddWidget('world_clocks', 'WORLD SESSION CLOCKS')}
-                  className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
-                >
-                  World Session Clocks
-                </button>
-                <button
-                  onClick={() => handleAddWidget('order_tape', 'LIVE ORDER TAPE STREAM')}
-                  className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
-                >
-                  Order Tape Stream
-                </button>
-                <button
-                  onClick={() => handleAddWidget('market_news', 'BREAKING TERMINAL WIRE')}
-                  className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
-                >
-                  Market Wire Feed
-                </button>
+                <div className="px-2 py-1 text-[10px] text-slate-500 font-bold border-b border-slate-800">AVAILABLE CANVAS WIDGETS</div>
+                {[
+                  ['global_indices', 'Global Indices', 'GLOBAL BENCHMARK ETF PROXIES'],
+                  ['sector_heatmap', 'Sector Heatmap', 'SECTOR HEATMAP'],
+                  ['aapl_chart', 'AAPL Chart', 'AAPL // 60-SESSION CANDLESTICK'],
+                  ['precious_metals', 'Commodity Proxies', 'COMMODITY ETF PROXIES'],
+                  ['world_clocks', 'World Session Clocks', 'WORLD SESSION CLOCKS'],
+                  ['order_tape', 'Market Activity Tape', 'MARKET ACTIVITY TAPE'],
+                  ['market_news', 'Market News', 'MARKET NEWS WIRE']
+                ].map(([type, label, title]) => (
+                  <button
+                    key={type}
+                    onClick={() => handleAddWidget(type as WidgetType, title)}
+                    className="w-full text-left px-2 py-1.5 hover:bg-slate-800 text-slate-200 rounded text-xs font-mono"
+                  >{label}</button>
+                ))}
               </div>
             )}
           </div>
 
-          {/* Export Offline ZIP Button */}
           <button
             onClick={() => generateOfflineZipBundle(widgets)}
             className="px-2.5 py-1 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-600 rounded text-xs font-bold flex items-center gap-1.5 transition-colors"
-            title="Download complete offline package with index.html, dependencies, and README"
+            title="Download offline simulated-data package"
           >
             <Download className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">OFFLINE .ZIP</span>
