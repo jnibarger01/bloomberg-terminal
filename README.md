@@ -1,115 +1,86 @@
 # Bloomberg Terminal Canvas
 
-Interactive market-terminal dashboard built with React, TypeScript, and Vite.
+Interactive market dashboard built with React, TypeScript, Vite, and a protected Express market-data backend.
 
-## 🚀 Full Scope MVP - Live Market Data
+## Data integrity
 
-This project now includes a **protected backend API** that connects every displayed instrument to real market data via Finnhub.
+The application has two explicit modes:
 
-### What's Connected
+- **Simulated:** locally generated demonstration data.
+- **Provider:** authenticated Finnhub data. Failed provider datasets remain empty and are reported as `degraded` or `failed`; they are never replaced with random values.
 
-| Widget | Data Source | Status |
-|--------|-------------|--------|
-| Global Indices | Finnhub Quotes | ✅ LIVE |
-| Sector Heatmap | Finnhub Quotes | ✅ LIVE |
-| AAPL Chart | Finnhub Candles | ✅ LIVE |
-| Precious Metals | Finnhub Commodities | ✅ LIVE |
-| Order Tape | Finnhub Live Feed | ✅ LIVE |
-| Market News | Finnhub News | ✅ LIVE |
+The international benchmark and commodity panels use clearly labeled **US-listed ETF proxies** because Finnhub's stock quote endpoint is used. They are not represented as cash indices or spot commodities.
 
-## 🛠️ Development
-
-### Installation
+## Setup
 
 ```bash
-npm install
+npm ci
+cp .env.example .env
 ```
 
-### Start Development Servers
+Set both required secrets in `.env`:
+
+```env
+FINNHUB_API_KEY=your_provider_key
+BACKEND_API_KEY=your_long_random_backend_key
+```
+
+Start the frontend and backend:
 
 ```bash
-# Option 1: Start both backend and frontend (recommended)
 npm run dev:all
-
-# Option 2: Start separately
-npm run dev:server  # Backend API on port 4000
-npm run dev         # Frontend on port 3000
 ```
 
-### Build for Production
+Open `http://localhost:3000`, enter the **backend API key** in the toolbar, and switch from simulated mode to provider mode.
+
+## Security and resilience
+
+- Every `/api/*` route requires `X-API-Key` and compares it to `BACKEND_API_KEY` with constant-time comparison.
+- The server refuses to start without backend authorization configured.
+- CORS uses an explicit origin allowlist.
+- Provider calls use TTL caching, bounded concurrency, timeouts, and API rate limiting.
+- Provider errors are returned as explicit dataset status; no synthetic provider fallback is used.
+- Trade tape records come from Finnhub WebSocket trade events. Buy/sell side is not inferred.
+
+## Provider datasets
+
+| Endpoint | Data |
+|---|---|
+| `GET /api/indices` | US-listed ETF proxies for international benchmarks |
+| `GET /api/heatmap` | US equity quotes and provider `marketCapitalization` |
+| `GET /api/stocks/:symbol/candles` | Finnhub stock candles; account entitlement may be required |
+| `GET /api/metals` | US-listed commodity ETF proxies, not spot prices |
+| `GET /api/tape` | Buffered Finnhub WebSocket trades |
+| `GET /api/news` | Normalized Finnhub market news |
+| `GET /api/sessions` | Static reference exchange hours |
+| `GET /health` | Public configuration and service health, without secrets |
+
+## Verification
 
 ```bash
+npm run verify
+```
+
+This runs TypeScript checks, backend and frontend-state tests, and the production build. GitHub Actions runs the same gate for pull requests and `main`.
+
+## Scripts
+
+```bash
+npm run dev
+npm run dev:server
+npm run dev:all
+npm run lint
+npm test
 npm run build
+npm run clean
+npm run start:prod
 ```
 
-The production build is stored in `dist/`.
+`npm run clean` removes generated output only; it does not delete source files.
 
-### Live Mode Usage
+## Deployment note
 
-1. Start the backend server (requires `FINNHUB_API_KEY` in `.env`)
-2. Run `npm run dev:all` to start both servers
-3. Open http://localhost:3000
-4. Click **LIVE DATA** button in the toolbar
-5. Enter your Finnhub API key when prompted
-
-## 🔐 API Configuration
-
-### Required: Finnhub API Key
-
-1. Get a free API key at https://finnhub.io/
-2. Copy `.env.example` to `.env`
-3. Add your key:
-   ```env
-   FINNHUB_API_KEY=your_api_key_here
-   ```
-
-### Backend Endpoints
-
-- `GET /api/indices` - Global market indices
-- `GET /api/heatmap` - Sector heatmap data
-- `GET /api/stocks/:symbol/candles` - Historical candlestick data
-- `GET /api/metals` - Precious metals & commodities
-- `GET /api/tape` - Live order tape
-- `GET /api/news` - Market news
-- `GET /api/sessions` - World market session times
-- `GET /health` - Health check
-
-## 📋 Project Structure
-
-```
-bloomberg-terminal/
-├── src/
-│   ├── main.tsx           # App entry point
-│   ├── App.tsx            # Main dashboard
-│   ├── components/        # UI components
-│   ├── services/
-│   │   └── dataAdapter.ts # Data layer with live mode
-│   ├── data/
-│   │   └── mockMarketData.ts # Fallback mock data
-│   └── utils/
-├── server.js              # Backend API server
-├── .env.example           # Environment template
-├── README-LIVE-API.md     # Full API documentation
-└── package.json
-```
-
-## 🎯 Full Scope MVP Coverage
-
-All 29+ instruments are connected to real data:
-
-**Stock Indices (10):** S&P 500, NASDAQ 100, Dow Jones, FTSE 100, DAX, Nikkei 225, Hang Seng, Shanghai, ASX 200, Nifty 50
-
-**Sector Stocks (20):** NVDA, AAPL, MSFT, GOOGL, AMZN, META, TSM, AVGO, AMD, XOM, CVX, COP, SLB, EOG, JPM, BAC, WFC, GS, MS, BLK
-
-**Metals & Commodities (8):** XAU/USD, XAG/USD, XPT/USD, XPD/USD, WTI Crude, Brent Crude, Nat Gas, Copper
-
-**Additional:** AAPL 60-session chart, World session clocks, Live order tape, Market news
-
-## 🔧 Troubleshooting
-
-- **API key required:** Ensure `FINNHUB_API_KEY` is set in `.env`
-- **Connection refused:** Check backend is running on port 4000
-- **Slow data:** Free Finnhub tier has rate limits; upgrade for higher limits
+GitHub Pages hosts only the static frontend. Provider mode also requires a separately deployed HTTPS backend and `VITE_BACKEND_URL` configured at build time or `bloomberg-backend-url` set in local storage.
 
 ## License
 
