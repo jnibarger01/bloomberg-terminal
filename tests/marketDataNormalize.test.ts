@@ -42,7 +42,7 @@ test("rejects a non-numeric price string instead of coercing garbage", () => {
 
 test("defaults currency to USD when the provider omits it, rather than failing", () => {
   const quote = normalizeTwelveDataQuote(
-    { symbol: "X", close: "10.0" },
+    { symbol: "X", close: "10.0", timestamp: "1764676800" },
     { instrumentId: "equity:x:xnas", provider: "twelve-data", latency: "real_time" }
   );
   assert.equal(quote?.currency, "USD");

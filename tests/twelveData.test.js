@@ -98,6 +98,18 @@ test('Twelve Data quote fields normalize to the existing provider interface', as
   });
 });
 
+test('Twelve Data rejects quotes without a valid source timestamp', async () => {
+  const client = createTwelveDataClient({
+    apiKey: 'provider-key',
+    fetchImpl: async () => jsonResponse(twelveDataQuote({ timestamp: undefined, datetime: undefined }))
+  });
+
+  await assert.rejects(
+    () => client.quote('AAPL'),
+    (error) => error instanceof ProviderError && error.code === 'INVALID_PROVIDER_RESPONSE'
+  );
+});
+
 test('Twelve Data maps provider HTTP failures to ProviderError', async () => {
   const client = createTwelveDataClient({
     apiKey: 'provider-key',

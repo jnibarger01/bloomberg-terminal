@@ -248,6 +248,13 @@ function normalizeTwelveDataQuote(payload, symbol) {
       status: 502
     });
   }
+  const timestamp = normalizeTwelveDataTimestamp(payload);
+  if (timestamp === undefined || timestamp <= 0) {
+    throw new ProviderError(`Missing provider timestamp for ${symbol}`, {
+      code: 'INVALID_PROVIDER_RESPONSE',
+      status: 502
+    });
+  }
   return {
     c: current,
     d: finiteNumber(payload.change),
@@ -255,7 +262,7 @@ function normalizeTwelveDataQuote(payload, symbol) {
     h: finiteNumber(payload.high),
     l: finiteNumber(payload.low),
     pc: finiteNumber(payload.previous_close),
-    t: normalizeTwelveDataTimestamp(payload)
+    t: timestamp
   };
 }
 
@@ -667,8 +674,8 @@ export function createApp(options = {}) {
         sourceSymbol: definition.symbol,
         proxy: true,
         price: Number(quote.c),
-        change: Number(quote.d ?? 0),
-        changePercent: Number(quote.dp ?? 0),
+        change: quote.d ?? null,
+        changePercent: quote.dp ?? null,
         high: Number(quote.h ?? quote.c),
         low: Number(quote.l ?? quote.c),
         sparkline: [Number(quote.pc ?? quote.c), Number(quote.c)],
@@ -707,7 +714,7 @@ export function createApp(options = {}) {
             ? Number((marketCapitalizationMillions / 1000).toFixed(2))
             : null,
           price: Number(quote.c),
-          changePercent: Number(quote.dp ?? 0)
+          changePercent: quote.dp ?? null
         },
         warning
       };
@@ -764,8 +771,8 @@ export function createApp(options = {}) {
         category: definition.category,
         unit: definition.unit,
         price: Number(quote.c),
-        change: Number(quote.d ?? 0),
-        changePercent: Number(quote.dp ?? 0),
+        change: quote.d ?? null,
+        changePercent: quote.dp ?? null,
         bid: null,
         ask: null,
         high24h: Number(quote.h ?? quote.c),
