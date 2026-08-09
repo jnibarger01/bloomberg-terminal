@@ -42,8 +42,7 @@ export function normalizeTwelveDataQuote(raw: RawQuote, options: NormalizeOption
   if (!Number.isFinite(timestamp.getTime())) return null;
   const sourceTimestamp = timestamp.toISOString();
 
-  const currency = str(raw.currency);
-  if (!currency) return null;
+  const currency = str(raw.currency) ?? "USD";
 
   const marketState: MarketState = raw.is_market_open === true ? "open" : raw.is_market_open === false ? "closed" : "closed";
 
