@@ -30,16 +30,20 @@ export interface NormalizeOptions {
 
 export function normalizeTwelveDataQuote(raw: RawQuote, options: NormalizeOptions): MarketQuote | null {
   const price = num(raw.close);
-  if (price === null) {
+  if (price === null || price <= 0) {
     // No usable price — doc section 7 data-quality controls say reject
     // malformed values rather than manufacture a number.
     return null;
   }
 
   const timestampSec = num(raw.timestamp);
-  const sourceTimestamp = timestampSec !== null ? new Date(timestampSec * 1000).toISOString() : new Date(0).toISOString();
+  if (timestampSec === null || timestampSec <= 0) return null;
+  const timestamp = new Date(timestampSec * 1000);
+  if (!Number.isFinite(timestamp.getTime())) return null;
+  const sourceTimestamp = timestamp.toISOString();
 
-  const currency = str(raw.currency) ?? "USD";
+  const currency = str(raw.currency);
+  if (!currency) return null;
 
   const marketState: MarketState = raw.is_market_open === true ? "open" : raw.is_market_open === false ? "closed" : "closed";
 
