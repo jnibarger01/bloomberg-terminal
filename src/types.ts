@@ -11,7 +11,8 @@ export type WidgetType =
   | 'precious_metals'
   | 'world_clocks'
   | 'order_tape'
-  | 'market_news';
+  | 'market_news'
+  | 'watchlist';
 
 export interface WidgetPosition {
   x: number;
@@ -27,6 +28,7 @@ export interface WidgetConfig {
   type: WidgetType;
   title: string;
   position: WidgetPosition;
+  instrumentIds?: string[];
   isMinimized?: boolean;
   isMaximized?: boolean;
 }

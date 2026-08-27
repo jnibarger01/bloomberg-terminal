@@ -20,6 +20,13 @@ export const DEFAULT_SETTINGS: DashboardSettings = {
 
 export const DEFAULT_WIDGETS_BLOOMBERG: WidgetConfig[] = [
   {
+    id: 'w-watchlist',
+    type: 'watchlist',
+    title: 'CONFIGURABLE PROVIDER WATCHLIST',
+    position: { x: 0, y: 0, w: 6, h: 5, minW: 3, minH: 4 },
+    instrumentIds: ['equity:nvda:xnas', 'equity:aapl:xnas', 'equity:msft:xnas']
+  },
+  {
     id: 'w-indices',
     type: 'global_indices',
     title: 'GLOBAL INDICES & BENCHMARKS',

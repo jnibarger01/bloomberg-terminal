@@ -16,6 +16,10 @@ dotenv.config();
 const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000', 'http://localhost:5173'];
 const DEFAULT_TRADE_SYMBOLS = ['AAPL', 'NVDA', 'MSFT', 'XOM', 'TSM', 'JPM'];
 const SUPPORTED_PROVIDERS = new Set(['finnhub', 'twelvedata']);
+const WATCHLIST_SYMBOLS = new Set([
+  'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSM', 'AVGO', 'AMD', 'XOM',
+  'CVX', 'COP', 'SLB', 'EOG', 'JPM', 'BAC', 'WFC', 'GS', 'MS', 'BLK', 'BTC/USD'
+]);
 
 const INDEX_PROXIES = [
   { symbol: 'SPY', label: 'S&P 500', name: 'S&P 500 ETF proxy', region: 'Americas' },
@@ -150,12 +154,32 @@ function createTtlCache() {
   };
 }
 
+export function classifyProviderError(error) {
+  const status = Number(error?.status);
+  return error?.code === 'PROVIDER_RATE_LIMITED' || error?.code === 'UPSTREAM_TIMEOUT' || status === 408 || status === 429 || status >= 500
+    ? 'retryable'
+    : 'terminal';
+}
+
+async function withProviderRetry(task, { maxAttempts = 3, backoffMs = 250 } = {}) {
+  const attempts = Math.min(3, Math.max(1, maxAttempts));
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { return await task(); } catch (error) {
+      if (attempt === attempts || classifyProviderError(error) === 'terminal') throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, backoffMs * (2 ** (attempt - 1)))));
+    }
+  }
+  throw new Error('Provider retry exhausted');
+}
+
 export function createFinnhubClient({
   apiKey,
   fetchImpl = globalThis.fetch,
   timeoutMs = 8_000,
   maxConcurrent = 4,
-  defaultCacheTtlMs = 15_000
+  defaultCacheTtlMs = 15_000,
+  maxAttempts = 3,
+  backoffMs = 250
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('A fetch implementation is required');
   const cache = createTtlCache();
@@ -179,7 +203,7 @@ export function createFinnhubClient({
     const cached = cache.get(cacheKey);
     if (cached !== undefined) return cached;
 
-    const payload = await runLimited(async () => {
+    const payload = await withProviderRetry(() => runLimited(async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
@@ -212,7 +236,7 @@ export function createFinnhubClient({
       } finally {
         clearTimeout(timeout);
       }
-    });
+    }), { maxAttempts, backoffMs });
 
     cache.set(cacheKey, payload, cacheTtlMs);
     return payload;
@@ -271,7 +295,9 @@ export function createTwelveDataClient({
   fetchImpl = globalThis.fetch,
   timeoutMs = 8_000,
   maxConcurrent = 4,
-  defaultCacheTtlMs = 15_000
+  defaultCacheTtlMs = 15_000,
+  maxAttempts = 3,
+  backoffMs = 250
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('A fetch implementation is required');
   const cache = createTtlCache();
@@ -294,7 +320,7 @@ export function createTwelveDataClient({
     const cached = cache.get(cacheKey);
     if (cached !== undefined) return cached;
 
-    const payload = await runLimited(async () => {
+    const payload = await withProviderRetry(() => runLimited(async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
@@ -337,7 +363,7 @@ export function createTwelveDataClient({
       } finally {
         clearTimeout(timeout);
       }
-    });
+    }), { maxAttempts, backoffMs });
 
     cache.set(cacheKey, payload, cacheTtlMs);
     return payload;
@@ -656,6 +682,36 @@ export function createApp(options = {}) {
   });
   app.post('/auth/validate', authorize, (_req, res) => res.json({ valid: true }));
   app.use('/api', authorize, createRateLimiter({ windowMs: rateLimitWindowMs, maxRequests: rateLimitMax }));
+
+  app.get('/api/quotes', async (req, res) => {
+    const symbols = [...new Set(String(req.query.symbols || '').split(',').map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))];
+    if (symbols.length === 0 || symbols.length > 20) return res.status(400).json({ error: 'symbols must contain between 1 and 20 entries' });
+    const invalid = symbols.filter((symbol) => !WATCHLIST_SYMBOLS.has(symbol));
+    if (invalid.length > 0) return res.status(400).json({ error: `Unsupported watchlist symbols: ${invalid.join(', ')}` });
+    const result = await collectItems(symbols.map((symbol) => ({ symbol })), async (definition) => {
+      const quote = assertQuote(await provider.quote(definition.symbol), definition.symbol);
+      return {
+        instrumentId: definition.symbol === 'BTC/USD' ? 'crypto:btcusd' : `equity:${definition.symbol.toLowerCase()}:${['AAPL', 'NVDA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'AVGO', 'AMD'].includes(definition.symbol) ? 'xnas' : 'xnys'}`,
+        price: Number(quote.c),
+        change: quote.d == null ? null : Number(quote.d),
+        changePercent: quote.dp == null ? null : Number(quote.dp),
+        open: null,
+        previousClose: quote.pc == null ? null : Number(quote.pc),
+        high: quote.h == null ? null : Number(quote.h),
+        low: quote.l == null ? null : Number(quote.l),
+        bid: null,
+        ask: null,
+        currency: 'USD',
+        sourceTimestamp: new Date(Number(quote.t || Date.now() / 1000) * 1000).toISOString(),
+        receivedTimestamp: new Date().toISOString(),
+        provider: providerSource,
+        latency: 'real_time',
+        marketState: 'open',
+        feedState: 'live'
+      };
+    });
+    return sendDataset(res, { ...result, source: providerSource, metadata: { requestedSymbols: symbols } });
+  });
 
   app.get('/api/indices', async (_req, res) => {
     const result = await collectItems(INDEX_PROXIES, async (definition) => {

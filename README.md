@@ -31,6 +31,8 @@ Start the frontend and backend:
 npm run dev:all
 ```
 
+The **Provider Watchlist** can be added from **ADD WIDGET** (it is included in the standard layout). Select resolved instruments from the registry; selections are saved with the canvas layout. In provider mode it calls the protected `/api/quotes` endpoint, retries transient failures up to three times with bounded exponential backoff, and keeps successful rows visible when individual quotes fail.
+
 Open `http://localhost:3000`, enter the **backend API key** in the toolbar, and switch from simulated mode to provider mode.
 
 ## Security and resilience

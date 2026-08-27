@@ -220,7 +220,8 @@ export const TerminalHeader: React.FC<Props> = ({
                   ['precious_metals', 'Commodity Proxies', 'COMMODITY ETF PROXIES'],
                   ['world_clocks', 'World Session Clocks', 'WORLD SESSION CLOCKS'],
                   ['order_tape', 'Market Activity Tape', 'MARKET ACTIVITY TAPE'],
-                  ['market_news', 'Market News', 'MARKET NEWS WIRE']
+                  ['market_news', 'Market News', 'MARKET NEWS WIRE'],
+                  ['watchlist', 'Provider Watchlist', 'CONFIGURABLE PROVIDER WATCHLIST']
                 ].map(([type, label, title]) => (
                   <button
                     key={type}

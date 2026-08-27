@@ -138,6 +138,25 @@ test('API rate limiter rejects requests beyond the configured window', async () 
   });
 });
 
+test('protected watchlist quotes accept only resolved registry symbols and preserve partial failures', async () => {
+  const app = createApp({
+    backendApiKey: BACKEND_KEY,
+    finnhubApiKey: 'provider-key',
+    fetchImpl: async (requestUrl) => {
+      const symbol = new URL(requestUrl).searchParams.get('symbol');
+      return symbol === 'MSFT' ? jsonResponse({ error: 'limited' }, 429) : jsonResponse({ c: 200, d: 1, dp: 0.5, pc: 199, t: 1_700_000_000 });
+    }
+  });
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/quotes?symbols=AAPL,MSFT`, { headers: authorizedHeaders() });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.status, 'degraded');
+    assert.equal(body.items[0].instrumentId, 'equity:aapl:xnas');
+    assert.equal(body.errors[0].code, 'PROVIDER_RATE_LIMITED');
+    assert.equal((await fetch(`${baseUrl}/api/quotes?symbols=SPY`, { headers: authorizedHeaders() })).status, 400);
+  });
+});
 test('provider client caches requests and enforces maximum concurrency', async () => {
   let calls = 0;
   let active = 0;

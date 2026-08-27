@@ -18,6 +18,7 @@ import { PreciousMetalsWidget } from './widgets/PreciousMetalsWidget';
 import { WorldClockWidget } from './widgets/WorldClockWidget';
 import { OrderTapeWidget } from './widgets/OrderTapeWidget';
 import { MarketNewsWidget } from './widgets/MarketNewsWidget';
+import { WatchlistWidget } from './widgets/WatchlistWidget';
 
 import {
   GripHorizontal,
@@ -44,6 +45,7 @@ interface Props {
     sessions: WorldSession[];
     tape: TapeTick[];
     news: NewsItem[];
+    mode: import('../types').AdapterMode;
   };
 }
 
@@ -220,7 +222,7 @@ export const CanvasWorkspace: React.FC<Props> = ({
 
                 {/* Maximized Content */}
                 <div className="flex-1 overflow-hidden">
-                  {renderWidgetContent(widget.type, data)}
+                  {renderWidgetContent(widget.type, data, widget)}
                 </div>
               </div>
             );
@@ -300,7 +302,7 @@ export const CanvasWorkspace: React.FC<Props> = ({
               {/* Window Body */}
               {!widget.isMinimized && (
                 <div className="flex-1 min-h-[220px] flex flex-col overflow-hidden">
-                  {renderWidgetContent(widget.type, data)}
+                  {renderWidgetContent(widget.type, data, widget)}
                 </div>
               )}
 
@@ -364,7 +366,7 @@ export const CanvasWorkspace: React.FC<Props> = ({
 };
 
 // Render matching Widget component
-function renderWidgetContent(type: WidgetConfig['type'], data: any) {
+function renderWidgetContent(type: WidgetConfig['type'], data: any, widget?: WidgetConfig) {
   switch (type) {
     case 'global_indices':
       return <GlobalIndicesWidget indices={data.indices} />;
@@ -385,6 +387,8 @@ function renderWidgetContent(type: WidgetConfig['type'], data: any) {
       return <OrderTapeWidget tape={data.tape} />;
     case 'market_news':
       return <MarketNewsWidget news={data.news} />;
+    case 'watchlist':
+      return <WatchlistWidget instrumentIds={widget?.instrumentIds} dataMode={data.mode} />;
     default:
       return <div className="p-4 text-xs font-mono text-slate-500">Unknown Widget Type</div>;
   }

@@ -143,7 +143,8 @@ export default function App() {
           metals: marketState.metals,
           sessions: marketState.sessions,
           tape: marketState.tape,
-          news: marketState.news
+          news: marketState.news,
+          mode: marketState.mode
         }}
       />
     </div>
